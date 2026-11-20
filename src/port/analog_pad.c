@@ -6,7 +6,9 @@
 #include <string.h>
 
 #include "game/input_internal.h"
+#include "game/race.h"
 #include "game/render.h"
+#include "game/scene.h"
 #include "game/state.h"
 #include "analog_pad.h"
 #include "axis_curve.h"
@@ -163,6 +165,16 @@ static SDL_Gamepad *AnalogFindGamepad(void) {
         int axis;
         int button;
         if (candidate == NULL) continue;
+#ifdef __ANDROID__
+        /* Quest: the Touch controllers are the virtual pad. Android also
+         * lists a second, motorless device that otherwise wins the activity
+         * tie and swallows the rumble. */
+        if (SDL_IsJoystickVirtual(ids[index])) {
+            activeId = ids[index];
+            SDL_free(ids);
+            return candidate;
+        }
+#endif
         for (axis = 0; axis < SDL_GAMEPAD_AXIS_COUNT; axis++) {
             int sample = SDL_GetGamepadAxis(
                 candidate, (SDL_GamepadAxis)axis);
@@ -186,8 +198,34 @@ static SDL_Gamepad *AnalogFindGamepad(void) {
     return pad;
 }
 
-static unsigned int GamepadButtons(SDL_Gamepad *pad) {
-    unsigned int held = 0;
+static int s_lookBehindHeld;
+
+int PortLookBehindHeld(void) { return s_lookBehindHeld; }
+
+#ifdef __ANDROID__
+/* Quest: the grips are the gear paddles ([xr] grip_shift, default on). */
+static int GripShiftEnabled(void) {
+    static int gripShift = -1;
+    if (gripShift < 0)
+        gripShift = RuntimeConfigGet("xr.grip_shift") == NULL ||
+                    RuntimeConfigEnabled("xr.grip_shift");
+    return gripShift;
+}
+#endif
+
+int PortOwnsLookBehind(void) {
+#ifdef __ANDROID__
+    /* Most NeGcon presets put shift up on d-pad down, which retail also
+     * reads as look-behind in the chase view; A is the look-behind button. */
+    return GripShiftEnabled();
+#else
+    return 0;
+#endif
+}
+
+/* Adds the gamepad's buttons to those already held (the platform layer's
+ * digital read of the same pad) and returns the combined set. */
+static unsigned int GamepadButtons(SDL_Gamepad *pad, unsigned int held) {
     if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_UP))
         held |= PAD_UP;
     if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT))
@@ -204,6 +242,36 @@ static unsigned int GamepadButtons(SDL_Gamepad *pad) {
         held |= PAD_CIRCLE;
     if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH))
         held |= PAD_TRIANGLE;
+#ifdef __ANDROID__
+    /* Quest: the grips are the gear paddles, left down and right up,
+     * whichever NeGcon button preset is selected in OPTIONS. The live
+     * mapping keeps the NeGcon row after the pad's eight masks; slots 4 and
+     * 5 are shift up and shift down. [xr] grip_shift = false restores L1/R1. */
+    {
+        if (GripShiftEnabled()) {
+            /* Both thumbsticks double as the d-pad, which is where those
+             * presets put the gear shift. While actually driving, only the
+             * grips may shift; paused or in menus the d-pad works again. */
+            if (g_SceneId == GAME_SCENE_RACE && g_RacePaused == 0)
+                held &= ~(unsigned int)(PAD_UP | PAD_DOWN);
+            /* While driving, A looks behind instead of being a second
+             * accelerator (the right trigger is the throttle). */
+            s_lookBehindHeld = 0;
+            if (g_SceneId == GAME_SCENE_RACE && g_RacePaused == 0 &&
+                SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH)) {
+                s_lookBehindHeld = 1;
+                held &= ~(unsigned int)PAD_CROSS;
+            }
+            if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER))
+                held |= g_PadButtonMapping[CONTROLLER_MAPPING_BUTTON_COUNT + 5];
+            if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER))
+                held |= g_PadButtonMapping[CONTROLLER_MAPPING_BUTTON_COUNT + 4];
+            if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_START))
+                held |= PAD_START;
+            return held;
+        }
+    }
+#endif
     if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER))
         held |= PAD_L1;
     if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER))
@@ -353,7 +421,7 @@ void PortSampleAnalogPad(void) {
     released = ((unsigned int)g_PadBuffers[2] << 8) | g_PadBuffers[3];
     held = ~released;
     if (wheel != NULL) held |= WheelButtons(wheel, &wheelSetup);
-    if (pad != NULL) held |= GamepadButtons(pad);
+    if (pad != NULL) held = GamepadButtons(pad, held);
     range = GetNegconSteerRange();
     twist = NegconTwist(AxisShaped(lx, &steering),
                         (held & PAD_LEFT) != 0, (held & PAD_RIGHT) != 0,
@@ -402,4 +470,25 @@ void PortSampleAnalogPad(void) {
     g_PadBuffers[6] = (u8)(g_NegconNeutralII + analogII);
     g_PadBuffers[7] = (u8)(g_NegconNeutralL + analogL);
     PublishAnalogInput(wheel, pad, AxisShaped(lx, &steering));
+}
+
+/* Control reminders shown under the pause menu. Only the Quest build has a
+ * fixed layout worth describing; elsewhere the player's own pad applies. */
+int PortPauseHints(const char *const **lines) {
+#ifdef __ANDROID__
+    static const char *const hints[] = {
+        "R TRIGGER GAS",
+        "L TRIGGER BRAKE",
+        "GRIPS GEAR DOWN AND UP",
+        "Y CHANGE VIEW",
+        "HOLD A LOOK BEHIND",
+        "STICK CLICK HUD ON OFF",
+        "HOLD X RECENTRE",
+    };
+    if (lines != NULL) *lines = hints;
+    return (int)(sizeof(hints) / sizeof(hints[0]));
+#else
+    if (lines != NULL) *lines = NULL;
+    return 0;
+#endif
 }

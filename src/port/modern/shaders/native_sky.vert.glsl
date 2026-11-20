@@ -13,8 +13,10 @@ layout(location = 0) out vec3 worldDirection;
 void main() {
     vec2 corner = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
     vec2 clip = corner * 2.0 - 1.0;
-    vec3 viewDirection = vec3(clip.x / camera.projection.x,
-                              clip.y / camera.projection.y, -1.0);
+    // Undo the off-axis centre (zero for symmetric cameras), see native.vert.
+    vec3 viewDirection = vec3((clip.x - camera.viewRow0.w) / camera.projection.x,
+                              (clip.y - camera.viewRow1.w) / camera.projection.y,
+                              -1.0);
     worldDirection = camera.viewRow0.xyz * viewDirection.x +
                      camera.viewRow1.xyz * viewDirection.y +
                      camera.viewRow2.xyz * viewDirection.z;

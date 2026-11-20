@@ -139,3 +139,19 @@ void UpdateLookBehindCamera(Camera *camera, GameCarRuntime *car) {
     SelectModelBank(0);
     DrawRacePlayerCarModel(car);
 }
+
+/* Port: look-behind from the driver's seat. Turning the in-car camera 180
+ * degrees about its own up axis is Ry(180) * Rz(roll) * Rx(pitch) * Ry(yaw),
+ * which equals the angles (-pitch, yaw + 180, -roll). The player's car is
+ * not drawn, as in the forward in-car view. */
+void UpdateInCarLookBehindCamera(Camera *camera, GameCarRuntime *car) {
+    GameViewWork viewWork;
+
+    LoadViewWork(&viewWork, &camera->view);
+    CameraViewFromCarBlock(camera, car, &viewWork);
+    viewWork.angleX = CameraSubtractWord(0, viewWork.angleX);
+    viewWork.angleY = CameraAddWord(viewWork.angleY, 0x800);
+    viewWork.angleZ = CameraSubtractWord(0, viewWork.angleZ);
+    StoreViewWork(&camera->view, &viewWork);
+    SetCameraRotMatrix(&g_RenderState, &camera->view);
+}

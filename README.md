@@ -1,5 +1,13 @@
 # Rage Racer PC
 
+> **This fork adds Rage Racer VR, a standalone Meta Quest port.** It runs on
+> the headset itself and puts you in the driver's seat with head tracking.
+> Install guide, controls and settings: [android/README.md](android/README.md).
+> The VR port is a Claude Code project: the code was written by Anthropic's AI
+> coding agent, and a person directed and play-tested it. It is published with
+> the upstream author's permission. Everything below is the upstream PC port's
+> README.
+
 [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white)](https://discord.gg/hbGvPbFguk)
 
 Native Windows, Linux and macOS port of *Rage Racer* (PAL / Europe,

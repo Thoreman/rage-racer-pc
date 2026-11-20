@@ -12,7 +12,19 @@ typedef enum RacePauseAction {
     RACE_PAUSE_RETIRE,
     RACE_PAUSE_TOGGLE_RENDERER,
     RACE_PAUSE_TOGGLE_FFB,
+    RACE_PAUSE_CYCLE_SPEED,
 } RacePauseAction;
+
+/* Port: the pause menu's MODERN/CLASSIC row. The Quest build has none: VR is
+ * drawn by the modern renderer only. In its place the Quest has a SPEED row
+ * (race game speed, see PortGameSpeedLabel), so both menus keep one layout. */
+#ifdef __ANDROID__
+#define RACE_PAUSE_RENDERER_ROW 0
+#define RACE_PAUSE_SPEED_ROW 1
+#else
+#define RACE_PAUSE_RENDERER_ROW 1
+#define RACE_PAUSE_SPEED_ROW 0
+#endif
 
 typedef enum RaceEndPresentation {
     RACE_END_PRESENTATION_NONE,

@@ -100,4 +100,7 @@ void main() {
     light = mix(light, vec3(1.0), fog.a);
     outColor = vec4(foggedColor * light + color.rgb *
         spotLighting(worldPositionIn, n) * (1.0 - fog.a), color.a);
+#ifdef XR_COVERAGE
+    outColor.a = 1.0; // see native_texture.frag
+#endif
 }

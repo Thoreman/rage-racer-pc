@@ -28,6 +28,19 @@ void PortUpdateForceFeedback(void);
 void PortToggleForceFeedback(void);
 int PortAdjustForceFeedbackGain(int direction);
 void PortForceFeedbackLabel(char *text, size_t size);
+/* Control reminder lines for the pause menu; returns how many (0 = none). */
+int PortPauseHints(const char *const **lines);
+/* Race game speed (Quest pause menu SPEED row): step it by direction
+ * (-1/+1, returns non-zero if it changed), step up with wrap-around, and the
+ * row's label. The PC build keeps full speed and never shows the row. */
+int PortAdjustGameSpeed(int direction);
+void PortCycleGameSpeed(void);
+void PortGameSpeedLabel(char *text, size_t size);
+/* Non-zero while the host's look-behind button is held (Quest: A). */
+int PortLookBehindHeld(void);
+/* Non-zero when the host has its own look-behind button, so retail's
+ * d-pad-down look-behind (shared with a gear shift on some presets) is off. */
+int PortOwnsLookBehind(void);
 
 /*
  * Says that a case falling into the next one is meant. A comment saying so is

@@ -20,7 +20,14 @@ typedef struct RenderShadowMap {
 /* One stable map follows the player and covers two terrain cells in every
  * direction. At 4096 samples this keeps vehicle silhouettes at two world
  * units per texel without introducing cascades or camera-relative shimmer. */
+#ifdef __ANDROID__
+/* Standalone headsets: a 4096² depth map is ~64 MB of memory traffic per
+ * frame on a tiled mobile GPU. 1024² (eight units per texel) keeps soft
+ * contact shadows at a fraction of the cost. */
+enum { RAGE_RENDER_VEHICLE_SHADOW_RESOLUTION = 1024 };
+#else
 enum { RAGE_RENDER_VEHICLE_SHADOW_RESOLUTION = 4096 };
+#endif
 static const float RAGE_RENDER_VEHICLE_SHADOW_EXTENT = 4096.0f;
 
 /* A high, slightly offset sun keeps vehicle contact shadows close to their

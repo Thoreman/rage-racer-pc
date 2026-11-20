@@ -140,6 +140,11 @@ static s32 UpdateRacePause(RaceScene *state) {
         PlaySoundCue(2);
         return 0;
     }
+    if (toggle.action == RACE_PAUSE_CYCLE_SPEED) {
+        PortCycleGameSpeed();
+        PlaySoundCue(2);
+        return 0;
+    }
     if (toggle.paused) {
         ResetRaceOptionMenuAnimation();
         PauseCdAudio();
@@ -318,6 +323,19 @@ static void UpdatePausedRaceScene(RaceScene *state) {
             PlaySoundCue(1);
         }
     }
+    if (RACE_PAUSE_SPEED_ROW &&
+        state->optionCursor == LastRacePauseOption(g_GrandPrixMode) - 1) {
+        s32 direction = 0;
+
+        if ((g_PadPressed & PAD_LEFT) != 0 && (g_PadPressed & PAD_RIGHT) == 0) {
+            direction = -1;
+        } else if ((g_PadPressed & PAD_RIGHT) != 0) {
+            direction = 1;
+        }
+        if (direction != 0 && PortAdjustGameSpeed(direction)) {
+            PlaySoundCue(1);
+        }
+    }
 
     DrawRaceOptionMenu(state->optionCursor);
     if (!RaceHasRivals()) {
@@ -454,8 +472,18 @@ static void UpdateActiveRaceScene(RaceScene *state) {
     } else if (raceView.cameraAction == RACE_CAMERA_ACTION_FOLLOW_PLAYER) {
         GameCarRuntime *player =
             AsRivalCar(&g_PlayerCar);
-        if (RaceLookBehindActive(g_PadHeld, g_RacePhase,
-                                 raceView.cameraView)) {
+        /* Port: a dedicated look-behind button works from either view and
+         * looks back from where you sit: the driver's seat in the car view,
+         * retail's rear chase camera outside. */
+        if (PortLookBehindHeld() && CanToggleRaceCamera(g_RacePhase) &&
+            raceView.cameraView == CAMERA_VIEW_CAR) {
+            UpdateInCarLookBehindCamera(&g_Camera, player);
+            GameRenderWorldSubmitPlayerCar(player, 0, 1);
+        } else if ((!PortOwnsLookBehind() &&
+                    RaceLookBehindActive(g_PadHeld, g_RacePhase,
+                                         raceView.cameraView)) ||
+                   (PortLookBehindHeld() &&
+                    CanToggleRaceCamera(g_RacePhase))) {
             UpdateLookBehindCamera(&g_Camera, player);
         } else {
             UpdateCamera(&g_Camera, raceView.cameraView, player);

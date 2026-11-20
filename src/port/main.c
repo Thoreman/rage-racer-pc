@@ -1,5 +1,10 @@
 #include <psyz.h>
 #include <psyz/video.h>
+#ifdef __ANDROID__
+/* Renames main() to SDL_main(), the entry point SDLActivity calls. */
+#include <SDL3/SDL_main.h>
+#include "android_bootstrap.h"
+#endif
 #include <psyz/audio.h>
 #include <libetc.h>
 
@@ -16,6 +21,7 @@
 #include "host_storage.h"
 #include "host_disc.h"
 #include "runtime_config.h"
+#include "xr_profile.h"
 #include "timing_control.h"
 #include "modern/modern_renderer.h"
 #include "modern/modern_assets.h"
@@ -80,7 +86,47 @@ int main(int argc, char **argv) {
     char carCatalogPath[PATH_MAX];
     char carCatalogError[256] = {0};
 
+#ifdef __ANDROID__
+    AndroidBootstrap();
+#endif
     if (!RuntimeConfigInit(argc, argv)) return EXIT_FAILURE;
+#ifdef __ANDROID__
+    /* The XR platform layer starts before the renderer and reads these from
+     * the environment: [xr] eye_scale (fraction of the runtime's recommended
+     * eye resolution) and refresh_rate (Hz). */
+    /* SDL_getenv reads SDL's own environment snapshot, so set them there. */
+    /* Unset values come from the headset's profile (xr_profile.c). */
+    SDL_SetEnvironmentVariable(SDL_GetEnvironment(), "PSYZ_XR_EYE_SCALE",
+                               XrProfileSetting("xr.eye_scale"), true);
+    SDL_SetEnvironmentVariable(SDL_GetEnvironment(), "PSYZ_XR_REFRESH_RATE",
+                               XrProfileSetting("xr.refresh_rate"), true);
+    /* Game logic keeps real time even when an XR frame is slow to present:
+     * VSync(1) counts from an absolute VBlank schedule (psyz sdl3_common.h).
+     * [xr] catchup = false restores the old present-relative pacing. */
+    SDL_SetEnvironmentVariable(SDL_GetEnvironment(), "PSYZ_CATCHUP",
+                               RuntimeConfigGet("xr.catchup") == NULL ||
+                                       RuntimeConfigEnabled("xr.catchup")
+                                   ? "1" : "0",
+                               true);
+    fprintf(stderr,
+            "rage-port: XR profile=%s refresh_rate=%s eye_scale=%s msaa=%s\n",
+            XrProfileName(), XrProfileSetting("xr.refresh_rate"),
+            XrProfileSetting("xr.eye_scale"), XrProfileSetting("xr.msaa"));
+    /* HUD panel placement in metres: hud_width, hud_distance, hud_drop. */
+    {
+        static const char *const hudKeys[][2] = {
+            {"xr.hud_width", "PSYZ_XR_HUD_WIDTH"},
+            {"xr.hud_distance", "PSYZ_XR_HUD_DISTANCE"},
+            {"xr.hud_drop", "PSYZ_XR_HUD_DROP"},
+        };
+        size_t i;
+        for (i = 0; i < sizeof(hudKeys) / sizeof(hudKeys[0]); i++)
+            if (RuntimeConfigGet(hudKeys[i][0]))
+                SDL_SetEnvironmentVariable(SDL_GetEnvironment(), hudKeys[i][1],
+                                           RuntimeConfigGet(hudKeys[i][0]),
+                                           true);
+    }
+#endif
     if(RuntimeConfigGet("tools.car_raw"))
         return ExportRawCar(RuntimeConfigGet("tools.car_raw"),RuntimeConfigInt("tools.car_bank",10,0,255),RuntimeConfigEnabled("tools.car_rival"),RuntimeConfigInt("tools.car_part",0,0,255),RuntimeConfigGet("tools.car_output"))?EXIT_SUCCESS:EXIT_FAILURE;
     if(RuntimeConfigGet("tools.track_export"))

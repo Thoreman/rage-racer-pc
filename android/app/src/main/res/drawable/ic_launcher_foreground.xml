@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Original artwork for this port: a road running to a setting sun. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- sun -->
+    <path android:fillColor="#FFFFD23F"
+        android:pathData="M54,56m-15,0a15,15 0,1 1,30 0a15,15 0,1 1,-30 0" />
+    <!-- ground -->
+    <path android:fillColor="#FF120920" android:pathData="M0,58h108v50h-108z" />
+    <!-- road -->
+    <path android:fillColor="#FF2E2347" android:pathData="M50,58L58,58L86,108L22,108z" />
+    <!-- kerbs -->
+    <path android:fillColor="#FFFF3B5C" android:pathData="M50,58L49.2,58L16,108L22,108z" />
+    <path android:fillColor="#FFFF3B5C" android:pathData="M58,58L58.8,58L92,108L86,108z" />
+    <!-- centre line -->
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M53.6,62L54.4,62L54.6,66L53.4,66zM53.2,71L54.8,71L55.2,79L52.8,79zM52.4,86L55.6,86L56.4,101L51.6,101z" />
+</vector>

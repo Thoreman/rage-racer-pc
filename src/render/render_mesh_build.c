@@ -89,8 +89,12 @@ static int TriangleIsRoadDecal(const RageNativeDrawVertex triangle[3],
     return RenderTriangleIsRoadDecal(positions, geometry);
 }
 
+/* World units along the face normal (0.04 m each in VR at world_scale 25). */
+#define ROAD_DECAL_LIFT 2.0f
+#define ROAD_DECAL_DRAPED_LIFT 0.5f
+
 static void LiftRoadDecal(RageNativeDrawVertex triangle[3],
-                          RageTriangleGeometry *geometry) {
+                          RageTriangleGeometry *geometry, float lift) {
     PrepareTriangleGeometry(triangle, geometry);
     float nx = geometry->nx, ny = geometry->ny, nz = geometry->nz;
     float length = geometry->length;
@@ -99,9 +103,9 @@ static void LiftRoadDecal(RageNativeDrawVertex triangle[3],
     if (ny < 0.0f) length = -length;
     nx /= length; ny /= length; nz /= length;
     for (corner = 0; corner < 3; corner++) {
-        triangle[corner].position[0] += nx * 2.0f;
-        triangle[corner].position[1] += ny * 2.0f;
-        triangle[corner].position[2] += nz * 2.0f;
+        triangle[corner].position[0] += nx * lift;
+        triangle[corner].position[1] += ny * lift;
+        triangle[corner].position[2] += nz * lift;
     }
 }
 
@@ -196,6 +200,12 @@ static uint32_t ClipViewTriangleNear(
     return count;
 }
 
+static int s_omnidirectionalFacing;
+
+void RenderSetOmnidirectionalFacing(int enabled) {
+    s_omnidirectionalFacing = enabled != 0;
+}
+
 static int TerrainTriangleFacesCamera(
     const RenderWorld *world, const RenderViewTransform *viewTransform,
     const Vec3 triangle[3]) {
@@ -203,6 +213,17 @@ static int TerrainTriangleFacesCamera(
     uint32_t corner, count, piece;
     for (corner = 0; corner < 3; corner++) {
         RenderWorldToViewPrepared(viewTransform, &triangle[corner], &input[corner]);
+    }
+    if (s_omnidirectionalFacing) {
+        /* XR: the player may look anywhere, so terrain behind the game
+         * camera's near plane must survive. The projected winding below is
+         * the sign of this triple product, which depends only on where the
+         * camera is, not on which way it faces. */
+        const Vec3 a = input[0], b = input[1], c = input[2];
+        float triple = a.x * (b.y * c.z - b.z * c.y) +
+                       a.y * (b.z * c.x - b.x * c.z) +
+                       a.z * (b.x * c.y - b.y * c.x);
+        return triple < 0.0f;
     }
     count = ClipViewTriangleNear(
         input, clipped, world->camera.nearPlane);
@@ -298,6 +319,12 @@ static RageInstanceFrustum PrepareInstanceFrustum(
     return result;
 }
 
+static int s_omnidirectionalCulling;
+
+void RenderSetOmnidirectionalCulling(int enabled) {
+    s_omnidirectionalCulling = enabled != 0;
+}
+
 static int InstanceOutsideFrustum(const RenderWorld *world,
                                       const RenderViewTransform *viewTransform,
                                       const RageInstanceFrustum *frustum,
@@ -314,6 +341,11 @@ static int InstanceOutsideFrustum(const RenderWorld *world,
     maxScale = fmaxf(fabsf(basis->scale.x),
                      fmaxf(fabsf(basis->scale.y), fabsf(basis->scale.z)));
     radius *= maxScale;
+    if (s_omnidirectionalCulling) {
+        float distance = sqrtf(view.x * view.x + view.y * view.y +
+                               view.z * view.z);
+        return distance - radius > world->camera.farPlane;
+    }
     if (depth + radius < world->camera.nearPlane ||
         depth - radius > world->camera.farPlane) return 1;
     /* Keep a small guard band around the visible frustum. In a low cockpit
@@ -380,7 +412,8 @@ static int BuildVertex(const RageTransformBasis *basis,
             (RAGE_RUNTIME_MATERIAL_TERRAIN_NEAR_ONLY |
              RAGE_RUNTIME_MATERIAL_TERRAIN_ENV_CLUT |
              RAGE_RUNTIME_MATERIAL_FOGGED |
-             RAGE_RUNTIME_MATERIAL_FOGGED_NORMAL_ENV)
+             RAGE_RUNTIME_MATERIAL_FOGGED_NORMAL_ENV |
+             RAGE_RUNTIME_MATERIAL_TERRAIN_ROAD_DECAL)
         : 0;
     const int materialFogged =
         (*materialFlags & RAGE_RUNTIME_MATERIAL_FOGGED) != 0 ||
@@ -711,6 +744,10 @@ static uint32_t RenderBuildNativeDrawsFiltered(
                 depthDecals[0] != depthDecals[2] ||
                 vertexCount > vertexCapacity ||
                 vertexCapacity - vertexCount < 3) continue;
+            const int drapedRoadDecal =
+                (materialFlags[0] & RAGE_RUNTIME_MATERIAL_TERRAIN_ROAD_DECAL) != 0;
+            for (corner = 0; corner < 3; ++corner)
+                materialFlags[corner] &= ~(uint32_t)RAGE_RUNTIME_MATERIAL_TERRAIN_ROAD_DECAL;
             RageTriangleGeometry geometry = {0};
             if ((instance->flags & RAGE_RENDER_INSTANCE_FLAT_SHADED) != 0)
                 ApplyFlatTriangleNormal(triangle, &geometry);
@@ -728,8 +765,13 @@ static uint32_t RenderBuildNativeDrawsFiltered(
                         triangle, world->camera.transform.position, &geometry);
             } else if (instance->assetSet == RAGE_RENDER_ASSET_TERRAIN &&
                 materials[0] != UINT32_MAX &&
-                TriangleIsRoadDecal(triangle, &geometry)) {
-                LiftRoadDecal(triangle, &geometry);
+                (drapedRoadDecal || TriangleIsRoadDecal(triangle, &geometry))) {
+                /* Draped paint already lies on the road surface: a token
+                 * lift is enough. Undraped paint is a flat strip over a
+                 * curved road and keeps the larger retail-shape lift. */
+                LiftRoadDecal(triangle, &geometry,
+                              drapedRoadDecal ? ROAD_DECAL_DRAPED_LIFT
+                                              : ROAD_DECAL_LIFT);
                 depthDecals[0] = depthDecals[1] = depthDecals[2] = 1;
             }
             if ((instance->flags & RAGE_RENDER_INSTANCE_CULL_BACKFACES) != 0 &&

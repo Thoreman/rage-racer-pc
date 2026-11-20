@@ -38,6 +38,11 @@ void PortForceFeedbackLabel(char *text, size_t size) {
     snprintf(text, size, "FFB OFF");
 }
 
+int PortPauseHints(const char *const **lines) {
+    if (lines != NULL) *lines = NULL;
+    return 0;
+}
+
 s32 rcos(s32 angle) {
     (void)angle;
     return 4096;

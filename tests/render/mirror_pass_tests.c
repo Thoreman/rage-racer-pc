@@ -19,6 +19,7 @@ s16 g_GrandPrixMode;
 s16 g_RacePhase;
 s32 g_MirrorPanelY;
 s32 g_MirrorUnlocked;
+RaceSession g_RaceSession;
 
 static long s_geomX;
 static long s_geomY;
@@ -73,6 +74,11 @@ static int TestAvailability(void) {
     original = g_RenderState;
     if (BeginMirrorPass() != 0 ||
         memcmp(&g_RenderState, &original, sizeof(original)) != 0) return 0;
+    /* Port: a custom race has rivals behind the player, so it has a mirror. */
+    g_RaceSession.kind = RACE_SESSION_CUSTOM;
+    if (BeginMirrorPass() == 0) return 0;
+    EndMirrorPass();
+    g_RaceSession.kind = RACE_SESSION_STANDARD;
     g_GrandPrixMode = 1;
     g_RacePhase = 1;
     original = g_RenderState;

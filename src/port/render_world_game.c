@@ -7,6 +7,7 @@
 #include "runtime_config.h"
 #include "native_visibility.h"
 #include "timing_control.h"
+#include "xr_profile.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -532,7 +533,8 @@ void GameRenderWorldPublishCurrentCamera(void) {
     mirrorCamera.fogFar *= 2.0f;
     mirrorActive = g_MirrorUnlocked != 0 && g_RenderState.mirror.enabled != 0 &&
                    g_Camera.mode == CAMERA_VIEW_CAR &&
-                   g_GrandPrixMode != 0 &&
+                   (g_GrandPrixMode != 0 ||
+                    g_RaceSession.kind == RACE_SESSION_CUSTOM) &&
                    g_RacePhase == RACE_PHASE_ACTIVE;
     RenderWorldSetMirrorCamera(GameRenderWorldMutable(), &mirrorCamera,
                                    mirrorActive, (float)g_MirrorPanelY);
@@ -702,12 +704,19 @@ void GameRenderWorldSubmitTerrainCell(uint32_t grid_x, uint32_t grid_z,
 /* The original per-region masks change with camera position and retain the
  * long straight without exposing unrelated sections above nearby scenery.
  * Main and mirror share a camera region; heading does not affect these masks. */
+static int s_fullVisibility;
+
+void GameRenderWorldSetFullVisibility(int enabled) {
+    s_fullVisibility = enabled != 0;
+}
+
 static int NativeRegionAllowsCell(int32_t cellX, int32_t cellZ) {
     _Static_assert(TERRAIN_CELL_GRID_SIZE == 32 &&
                    TERRAIN_CELL_REGION_SHIFT == 10,
                    "native visibility must match the original table layout");
     static int enabled = -1;
     const RenderWorld *world = GameRenderWorldMutable();
+    if (s_fullVisibility) return 1;
     if (enabled < 0)
         enabled = RuntimeConfigGet("diagnostics.native_region_visibility") == NULL ||
                   RuntimeConfigEnabled("diagnostics.native_region_visibility");
@@ -974,8 +983,12 @@ void GameRenderWorldPublishRaceCars(void) {
     uint32_t source, destination = 0;
     int car;
 
+    /* Port: a custom race has rivals too, and its mirror (and a VR head
+     * turned away from the game camera) needs them all. */
     if (!s_initialized || !GameSceneUsesRaceWorld() ||
-        (g_SceneId == 12 && g_GrandPrixMode == 0)) return;
+        (g_SceneId == 12 && g_GrandPrixMode == 0 &&
+         (g_RaceSession.kind != RACE_SESSION_CUSTOM ||
+          !XrDebugProp("allrivals", 1)))) return;
     world = GameRenderWorldMutable();
     /* DrawCar historically publishes only rivals accepted by the active GTE
      * view. Replace those partial main-camera submissions with one complete

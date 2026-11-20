@@ -55,6 +55,13 @@ const RageNativeMeshTemplateView *RenderNativeMeshTemplateAcquire(
     RageNativeMeshTemplateCache *cache, const RageRuntimeMesh *mesh,
     RenderAssetSet assetSet, uint32_t submesh);
 void RenderNativeMeshTemplateCacheRelease(RageNativeMeshTemplateCache *cache);
+/* XR: the player can look in any direction from the game camera, so instance
+ * culling keeps only the draw-distance test (a sphere round the camera) and
+ * drops the side, near and behind-camera tests. */
+void RenderSetOmnidirectionalCulling(int enabled);
+/* XR: terrain back-face selection by camera position alone, keeping terrain
+ * that lies behind the game camera's near plane. */
+void RenderSetOmnidirectionalFacing(int enabled);
 /* Also retain local source/transform metadata for resident GPU draws. Spans
  * are separated at instance/template boundaries. With expandWorldVertices=0,
  * local spans reserve ranges without writing them; use ExpandNativeLocalDraw

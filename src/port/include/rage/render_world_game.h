@@ -50,6 +50,9 @@ void GameRenderWorldSubmitDynamicCourseOverlay(
 void GameRenderWorldSubmitTerrainCell(uint32_t grid_x, uint32_t grid_z,
                                           int32_t mesh, int mirror_pass);
 void GameRenderWorldPublishTerrainGrid(void);
+/* XR: the authored per-region visibility masks assume a forward-facing
+ * camera; a player looking around needs every cell within draw distance. */
+void GameRenderWorldSetFullVisibility(int enabled);
 void GameRenderWorldPublishCourseObjects(void);
 /* Publish active race traffic independently of what the classic main camera
  * happened to submit, so secondary native cameras see the complete field. */

@@ -73,6 +73,10 @@ enum {
     /* Interchange car mesh uses original bank slots, rather than built-in
      * per-part sources. Consumed when resolving a replacement's materials. */
     RAGE_RUNTIME_MATERIAL_CAR_BANK = 1u << 25,
+    /* Terrain road paint the importer draped onto the road (with
+     * RAGE_RUNTIME_MATERIAL_METADATA). The draw builder treats it as a road
+     * decal regardless of shape and strips the bit. */
+    RAGE_RUNTIME_MATERIAL_TERRAIN_ROAD_DECAL = 1u << 24,
     RAGE_RUNTIME_MATERIAL_DEPTH_BIAS_SHIFT = 16,
     RAGE_RUNTIME_MATERIAL_INDEX_MASK = 0xFFFFu,
 };

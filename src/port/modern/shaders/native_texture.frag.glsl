@@ -2,7 +2,16 @@
 #extension GL_GOOGLE_include_directive : require
 #include "native_ray.glsl"
 
+#ifdef XR_SUPERSAMPLE
+/* XR eyes are multisampled: a pixel only partly covered by a triangle is
+ * shaded at its centre, which can lie outside the triangle, and the
+ * extrapolated coordinates then read the neighbouring atlas entry (dark
+ * dashed lines along the edges of tree and sign quads). Centroid keeps the
+ * sample inside the triangle. */
+layout(location = 0) centroid in vec2 uv;
+#else
 layout(location = 0) in vec2 uv;
+#endif
 layout(location = 1) in vec4 color;
 layout(location = 2) in vec3 normal;
 layout(location = 3) in vec4 fog;
@@ -44,15 +53,31 @@ layout(set = 3, binding = 1, std140) uniform NativeMaterial {
     LampPatch lamps[8];
 } material;
 
-float shadowVisibility(vec3 n) {
+float shadowVisibility(vec3 n, int skip) {
     if (shadowCoord.x <= 0.0 || shadowCoord.x >= 1.0 ||
         shadowCoord.y <= 0.0 || shadowCoord.y >= 1.0 ||
         shadowCoord.z <= 0.0 || shadowCoord.z >= 1.0) return 1.0;
     float facing = max(dot(n, normalize(sceneLight.direction.xyz)), 0.0);
     float bias = mix(0.00025, 0.00008, facing);
     vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0));
+    // The constants were tuned for a 4096-texel map; coarser maps (mobile
+    // XR uses 1024) need proportionally more bias or surfaces self-shadow
+    // in stripes ("acne").
+    bias *= 4096.0 * texelSize.x;
     vec2 pixel = shadowCoord.xy / texelSize - 0.5;
     vec2 fraction = fract(pixel);
+#ifdef XR_SUPERSAMPLE
+    /* XR: one gather fetches the same 2x2 texels as the four reads below
+     * (Quest traces: shadows ~1.5 ms a frame). Sampling at the shared corner
+     * of the four texels selects exactly that quad. Components: w (x0,y0),
+     * z (x1,y0), x (x0,y1), y (x1,y1). Probe bit 32 keeps the four reads. */
+    if ((skip & 32) == 0) {
+        vec4 stored = textureGather(shadowMap, (floor(pixel) + 1.0) * texelSize, 0);
+        vec4 lit = step(vec4(shadowCoord.z - bias), stored);
+        return mix(mix(lit.w, lit.z, fraction.x),
+                   mix(lit.x, lit.y, fraction.x), fraction.y);
+    }
+#endif
     vec2 first = (floor(pixel) + 0.5) * texelSize;
     float visible = 0.0;
     for (int y = 0; y < 2; y++) {
@@ -76,12 +101,63 @@ vec3 reflectedSky(vec3 direction) {
                smoothstep(0.0, 0.55, -direction.y));
 }
 
+#ifdef XR_SUPERSAMPLE
+/* Taps per axis at most. 4 (16 reads) cost a Quest 3 most of its frame at
+ * 120 Hz: GPU traces showed ~12 ms per eye. 2 keeps most of the moire fix
+ * for a quarter of the reads. */
+#ifndef XR_SUPERSAMPLE_MAX_TAPS
+#define XR_SUPERSAMPLE_MAX_TAPS 2.0
+#endif
+/* XR: the atlas-safe mip chain stops at 1/8 size, so far surfaces with fine
+ * repeating detail (grandstand rows, chequered lines) are under-sampled and
+ * alias into moving moire bars. Past the last mip, average a grid of taps
+ * across this pixel's own texture footprint at the last level: a box filter
+ * over exactly what the pixel covers, without the neighbouring-entry bleed
+ * a deeper mip would add. Nearby surfaces take the single-tap path. */
+vec4 SampleMaterial(vec2 coord) {
+    vec2 size = vec2(textureSize(materialTexture, 0));
+    vec2 dx = dFdx(coord), dy = dFdy(coord);
+    float footprint = max(length(dx * size), length(dy * size));
+    float maxLevel = float(textureQueryLevels(materialTexture) - 1);
+    float excess = log2(max(footprint, 1.0)) - maxLevel;
+    /* Start a level early: the last mip itself still aliases fine detail. */
+    if (excess <= -1.0) return texture(materialTexture, coord);
+    /* Taps per axis grow with how far past the chain the footprint is. */
+    int taps = int(clamp(ceil(exp2(excess + 1.0)), 2.0,
+                         XR_SUPERSAMPLE_MAX_TAPS));
+    vec2 gdx = dx / float(taps), gdy = dy / float(taps);
+    vec4 sum = vec4(0.0);
+    for (int j = 0; j < taps; j++) {
+        for (int i = 0; i < taps; i++) {
+            vec2 offset = (vec2(i, j) + 0.5) / float(taps) - 0.5;
+            sum += textureGrad(materialTexture,
+                               coord + dx * offset.x + dy * offset.y,
+                               gdx, gdy);
+        }
+    }
+    return sum / float(taps * taps);
+}
+#else
+vec4 SampleMaterial(vec2 coord) { return texture(materialTexture, coord); }
+#endif
+
 void main() {
+    /* GPU cost probing: sceneLight.spotCount.y is a bitmask of features to
+     * skip (1 shadow, 2 specular and reflection, 4 lamp lighting, 8
+     * supersampling, 16 lamp patches; 32 is not a skip: XR shadows use four
+     * reads instead of one gather). Always 0 outside XR probing. */
+    int skip = int(sceneLight.spotCount.y + 0.5);
     /* Material mips are stored premultiplied so transparent atlas texels do
      * not contribute a black fringe. Convert back after filtered sampling. */
-    vec4 texel = texture(materialTexture, uv);
+    vec4 texel = (skip & 8) != 0 ? texture(materialTexture, uv)
+                                 : SampleMaterial(uv);
+#ifndef XR_NO_DISCARD
+    /* A shader that can discard turns off the tiler's early depth rejection
+     * (LRZ) for its whole draw; XR_NO_DISCARD is the variant for textures
+     * that have no transparent texels, where this could never fire. */
     if ((material.surface.z > 1.5 && material.surface.z < 2.5 &&
          texel.a < 0.5) || texel.a <= 0.001) discard;
+#endif
     texel.rgb /= texel.a;
     vec3 n = dot(normal, normal) > 0.000001
         ? normalize(normal) : vec3(0.0, 1.0, 0.0);
@@ -91,7 +167,8 @@ void main() {
     if (material.emissiveAndShading.w >= 0.0)
         materialLighting = material.emissiveAndShading.w;
     float visibility = 1.0;
-    if (shadowReception > 0.5 && materialLighting > 0.0 && fog.a < 1.0) {
+    if (shadowReception > 0.5 && materialLighting > 0.0 && fog.a < 1.0 &&
+        (skip & 1) == 0) {
         /* Fog replaces the lit colour, so a fragment that is nearly all fog
          * gains nothing from a traced sun ray; the shadow map is enough. */
         if (sceneLight.ray.x > 0.5 && fog.a < 0.9) {
@@ -101,7 +178,7 @@ void main() {
                 worldPositionIn + rayDirection * epsilon, rayDirection,
                 uint(sceneLight.ray.y + 0.5), uint(sceneLight.ray.w + 0.5));
         } else {
-            visibility = shadowVisibility(n);
+            visibility = shadowVisibility(n, skip);
         }
     }
     // Estimate edge coverage from the neighbouring fragment quad. Keep this
@@ -135,6 +212,10 @@ void main() {
     float gloss = 1.0 - roughness;
     float coat = smoothstep(0.18, 0.55, gloss) *
         min(material.surface.w, 1.0);
+    vec3 specular = vec3(0.0);
+    /* With no coat both the reflection and the specular term below are
+     * multiplied by exactly zero, so skip them; most scenery is matte. */
+    if ((skip & 2) == 0 && coat > 0.0) {
     vec3 lightDirection = normalize(sceneLight.direction.xyz);
     vec3 halfDirection = normalize(lightDirection + view);
     float ndl = max(dot(n, lightDirection), 0.0);
@@ -183,12 +264,19 @@ void main() {
     reflected = mix(vec3(reflectedLuminance), reflected, 0.65);
     base = mix(base, reflected, clamp(reflectionStrength, 0.0, 0.85) * (1.0 - fog.a));
     directSpecular *= coat * zoneReflection;
-    vec3 specular = directSpecular * step(0.001, materialLighting);
-    base += texel.rgb * modulation * material.baseColor.rgb *
-        spotLighting(worldPositionIn, n) * (1.0 - fog.a);
+    specular = directSpecular * step(0.001, materialLighting);
+    }
+    /* Lamp light is scaled by (1 - fog), so fully fogged pixels skip it. */
+    if ((skip & 4) == 0 && fog.a < 0.999)
+        base += texel.rgb * modulation * material.baseColor.rgb *
+            spotLighting(worldPositionIn, n) * (1.0 - fog.a);
     vec3 emissive = texel.rgb * material.emissiveAndShading.rgb;
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < ((skip & 16) != 0 ? 0 : 8); ++i) {
         vec4 bounds = material.lamps[i].bounds;
+        /* Lamp patches are packed from slot 0 and the rest are zeroed; an
+         * empty (zero-width) slot can never light a texel, so stop there.
+         * Scenery, which has none, pays one test instead of eight. */
+        if (bounds.z <= bounds.x) break;
         if (material.lamps[i].emission.w > 0.5) {
             vec2 lens = (uv - (bounds.xy + bounds.zw) * 0.5) /
                         max((bounds.zw - bounds.xy) * 0.5, vec2(0.00001));
@@ -200,4 +288,9 @@ void main() {
     }
     outColor = vec4(base + (specular + emissive) * (1.0 - fog.a),
                     texel.a * color.a * material.baseColor.a);
+#ifdef XR_COVERAGE
+    // XR MSAA opaque variant: alpha records geometry coverage (the sky
+    // leaves it at zero) so the crack fill can find holes after resolve.
+    outColor.a = 1.0;
+#endif
 }

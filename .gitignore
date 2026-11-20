@@ -97,3 +97,6 @@ debug_source.c
 .visual-cache/
 rage-port.cfg
 markers/
+android/app/local-icon/
+android/keystore.properties
+*.jks

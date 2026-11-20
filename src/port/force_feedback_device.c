@@ -318,8 +318,9 @@ static void SendRumble(float low, float high) {
 
 static int Driving(void) {
     return g_SceneId == GAME_SCENE_RACE && g_RacePaused == 0 &&
-           g_RacePhase < RACE_PHASE_FINISHED &&
-           g_PlayerCar.initializedFlag != 0;
+           /* The player car's initializedFlag is only ever set for rivals,
+            * so it cannot gate this: it kept every effect silent. */
+           g_RacePhase < RACE_PHASE_FINISHED;
 }
 
 static float EngineWave(int rpm) {
@@ -397,6 +398,9 @@ int PortAdjustForceFeedbackGain(int direction) {
     int next;
 
     LoadSettings();
+#ifdef __ANDROID__
+    return 0; /* Quest shows only on/off. */
+#endif
     if (!s_enabled || direction == 0) return 0;
     next = s_gainPercent + (direction < 0 ? -FFB_GAIN_STEP : FFB_GAIN_STEP);
     if (next < 0) next = 0;
@@ -410,6 +414,11 @@ int PortAdjustForceFeedbackGain(int direction) {
 void PortForceFeedbackLabel(char *text, size_t size) {
     if (text == NULL || size == 0) return;
     LoadSettings();
+#ifdef __ANDROID__
+    /* Quest: controller vibration, simply on or off. */
+    snprintf(text, size, s_enabled ? "VIBRATE ON" : "VIBRATE OFF");
+    return;
+#endif
     if (!s_enabled) {
         snprintf(text, size, "FFB OFF");
         return;

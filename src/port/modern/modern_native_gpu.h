@@ -36,6 +36,31 @@ void ModernNativeGpuDraw(SDL_GPUCommandBuffer *command,
                          SDL_GPUTexture *colorTarget,
                          SDL_GPUTexture *depthTarget,
                          int clearColor, int drawSky, int targetHeight);
+
+/* One XR eye relative to the game camera: pose in metres in the game
+ * camera's own view space (+X right, +Y up, -Z forward) plus the eye's
+ * asymmetric field-of-view tangents (left/down negative). */
+typedef struct ModernNativeEyeView {
+    float position[3];
+    float orientation[4]; /* quaternion x, y, z, w */
+    float tanLeft, tanRight, tanUp, tanDown;
+} ModernNativeEyeView;
+
+/* Draws the prepared world once per eye, each with its own sky. worldScale
+ * converts metres of head movement into world units. */
+/* With resolveTargets, colour/depth are 4x multisampled and colour resolves
+ * into resolveTargets (alpha = geometry coverage); requires
+ * ModernNativeGpuEyeMsaaReady(). Pass NULL for single-sampled targets. */
+void ModernNativeGpuDrawStereo(SDL_GPUCommandBuffer *command,
+                               SDL_GPUTexture *const colorTargets[2],
+                               SDL_GPUTexture *const depthTargets[2],
+                               SDL_GPUTexture *const resolveTargets[2],
+                               const ModernNativeEyeView eyes[2],
+                               float worldScale, int targetHeight);
+/* Builds the 4x MSAA eye pipelines on first call; 0 if unavailable. */
+int ModernNativeGpuEyeMsaaReady(void);
+/* Sample count of the XR MSAA eye targets and pipelines ([xr] msaa_samples). */
+SDL_GPUSampleCount ModernNativeGpuEyeSampleCount(void);
 void ModernNativeGpuDrawMirror(SDL_GPUCommandBuffer *command,
                                SDL_GPUTexture *colorTarget,
                                SDL_GPUTexture *depthTarget, int targetHeight);

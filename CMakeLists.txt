@@ -365,6 +365,7 @@ if(RAGE_BUILD_PORT)
         src/port/track_asset_identity.c
         src/port/track_lighting.c
         src/port/runtime_config.c
+        src/port/xr_profile.c
         src/port/runtime_parse.c
         src/port/timing_control.c
         src/port/analog_pad.c
@@ -442,6 +443,21 @@ if(RAGE_BUILD_PORT)
     target_include_directories(rage-port-legacy PRIVATE src/port/include include)
     target_link_libraries(rage-port-legacy PRIVATE psyz rage-content)
     target_compile_options(rage-port-legacy PRIVATE ${RAGE_COMPAT_COMPILE_OPTIONS})
+    if(ANDROID)
+        # SDLActivity loads the game as libmain.so and calls SDL_main.
+        add_library(rage-racer SHARED
+            src/port/main.c
+            src/port/android_bootstrap.c
+            src/port/runtime_control.c
+            ${RAGE_PORT_COMMON_SOURCES}
+            $<TARGET_OBJECTS:rage-port-legacy>
+            $<TARGET_OBJECTS:rage-game-full>
+            $<TARGET_OBJECTS:rage-host-state>
+        )
+        set_target_properties(rage-racer PROPERTIES OUTPUT_NAME main)
+        # SDL's Android HIDAPI backend is C++.
+        target_link_libraries(rage-racer PRIVATE c++_static c++abi android log)
+    else()
     add_executable(rage-racer
         MACOSX_BUNDLE
         src/port/main.c
@@ -451,6 +467,7 @@ if(RAGE_BUILD_PORT)
         $<TARGET_OBJECTS:rage-game-full>
         $<TARGET_OBJECTS:rage-host-state>
     )
+    endif()
     add_executable(rage-racer-smoke
         src/port/main_smoke.c
         src/port/smoke_control.c

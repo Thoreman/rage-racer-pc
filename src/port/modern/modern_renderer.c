@@ -15,6 +15,9 @@
 #include <psyz/present_sdl3_gpu.h>
 #include <psyz/video.h>
 #include <psyz/overlay.h>
+#include <psyz/xr.h>
+#include "game/camera_types.h"
+#include "render/render_native_vertex.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -26,11 +29,13 @@
 #include "../platform_paths.h"
 #include "game/player_car_internal.h"
 #include "game/race.h"
+#include "game/state.h"
 #include "game/render_internal.h"
 #include "game/track_internal.h"
 #include "rage/render_world_scene.h"
 #include "modern_renderer_diagnostics.h"
 #include "../runtime_config.h"
+#include "../xr_profile.h"
 #include "../native_asset_importer.h"
 #include "shaders/modern_vert_spv.h"
 #include "shaders/modern_frag_spv.h"
@@ -40,6 +45,10 @@
 #include "shaders/modern_vert_msl.h"
 #include "shaders/post_frag_msl.h"
 #include "shaders/composite_frag_spv.h"
+#include "shaders/crack_fill_frag_spv.h"
+#include "shaders/crack_fill_debug_frag_spv.h"
+#include "shaders/crack_fill_alpha_frag_spv.h"
+#include "shaders/crack_fill_alpha_debug_frag_spv.h"
 #include "shaders/composite_frag_msl.h"
 #include "shaders/post_vert_msl.h"
 
@@ -112,6 +121,21 @@ static float s_logicalW = 320.0f; /* 16:9 widens this; 240 rows stay */
 static float s_overscanX;         /* (logicalW - 320) / 2 */
 static SDL_GPUTexture *s_target;
 static SDL_GPUTexture *s_depth;
+/* XR stereo: one colour/depth pair per eye at the headset's eye size. */
+static SDL_GPUTexture *s_eyeTarget[2];
+static SDL_GPUTexture *s_eyeDepth[2];
+static SDL_GPUTexture *s_eyeFinal[2]; /* after the crack fill */
+/* 4x MSAA colour/depth; colour resolves into s_eyeTarget. */
+static SDL_GPUTexture *s_eyeMsaa[2];
+static SDL_GPUTexture *s_eyeMsaaDepth[2];
+static int s_eyeMsaaOn;
+static SDL_GPUGraphicsPipeline *s_pipeCrackFill;
+/* XR HUD panel: the 2D HUD layer alone on a transparent background
+ * (premultiplied alpha, as the overlay pipelines blend), s_target-sized. */
+static SDL_GPUTexture *s_hudTarget;
+/* When set, overlay passes draw here instead of s_target. */
+static SDL_GPUTexture *s_overlayTarget;
+static unsigned s_eyeW, s_eyeH;
 static SDL_GPUTexture *s_mirrorTarget;
 static SDL_GPUTexture *s_mirrorDepth;
 static int s_mirrorTargetW, s_mirrorTargetH;
@@ -190,6 +214,10 @@ static void ModernDisableFrameHistory(void) {
 
 /* ---- resource creation ---- */
 
+/* Uniform buffers the next fragment shader created here declares (the XR
+ * crack-fill pass takes one for its colour grade; the rest take none). */
+static int s_fragmentUniformBuffers;
+
 static SDL_GPUShader *ModernCreateShader(
     const unsigned char *spirv, size_t spirvSize,
     const char *msl, size_t mslSize, SDL_GPUShaderStage stage,
@@ -198,6 +226,8 @@ static SDL_GPUShader *ModernCreateShader(
     SDL_GPUShaderCreateInfo info = {0};
     info.stage = stage;
     info.num_samplers = (Uint32)samplers;
+    if (stage == SDL_GPU_SHADERSTAGE_FRAGMENT)
+        info.num_uniform_buffers = (Uint32)s_fragmentUniformBuffers;
     if ((formats & SDL_GPU_SHADERFORMAT_SPIRV) && spirv != NULL) {
         info.code = spirv;
         info.code_size = spirvSize;
@@ -329,6 +359,19 @@ static void ModernDestroyResources(void) {
         ModernFmvZoomRelease(s_device);
         RAGE_RELEASE(Texture, s_target);
         RAGE_RELEASE(Texture, s_depth);
+        RAGE_RELEASE(Texture, s_eyeTarget[0]);
+        RAGE_RELEASE(Texture, s_eyeTarget[1]);
+        RAGE_RELEASE(Texture, s_eyeDepth[0]);
+        RAGE_RELEASE(Texture, s_eyeDepth[1]);
+        RAGE_RELEASE(Texture, s_eyeFinal[0]);
+        RAGE_RELEASE(Texture, s_eyeFinal[1]);
+        RAGE_RELEASE(Texture, s_eyeMsaa[0]);
+        RAGE_RELEASE(Texture, s_eyeMsaa[1]);
+        RAGE_RELEASE(Texture, s_eyeMsaaDepth[0]);
+        RAGE_RELEASE(Texture, s_eyeMsaaDepth[1]);
+        RAGE_RELEASE(GraphicsPipeline, s_pipeCrackFill);
+        RAGE_RELEASE(Texture, s_hudTarget);
+        s_eyeW = s_eyeH = 0;
         RAGE_RELEASE(Texture, s_mirrorTarget);
         RAGE_RELEASE(Texture, s_mirrorDepth);
         RAGE_RELEASE(Sampler, s_sampler);
@@ -998,6 +1041,47 @@ static void ClassicBuildFrame(const RageSceneSnapshot *snapshot) {
     }
 }
 
+/* Set while the overlay is built for the XR HUD panel. */
+static int s_xrHudBuild;
+
+/* An untextured quad or rectangle covering (nearly) the whole 320x240
+ * screen: the game's fades and flashes. On the XR HUD panel these would turn
+ * the floating panel into a solid board, so the panel build leaves them out. */
+static int ModernPacketIsScreenFill(const RageCapturePacket *packet,
+                                    const Modern2DState *state) {
+    const uint32_t *words = packet->words;
+    uint32_t command = words[0] >> 24;
+    int minX = 4096, minY = 4096, maxX = -4096, maxY = -4096;
+    if ((command & 0x04u) != 0) return 0; /* textured */
+    if ((command & 0xE0u) == 0x20u && (command & 0x08u) != 0) {
+        int gouraud = (command & 0x10u) != 0;
+        int cursor = 1, vertex;
+        for (vertex = 0; vertex < 4; vertex++) {
+            uint32_t xy;
+            int px, py;
+            if (vertex > 0 && gouraud) cursor++;
+            if (cursor >= packet->size) return 0;
+            xy = words[cursor++];
+            px = (int)((xy & 0x7FFu) ^ 1024) - 1024 + state->offsetX;
+            py = (int)(((xy >> 16) & 0x7FFu) ^ 1024) - 1024 + state->offsetY;
+            if (px < minX) minX = px;
+            if (px > maxX) maxX = px;
+            if (py < minY) minY = py;
+            if (py > maxY) maxY = py;
+        }
+    } else if ((command & 0xF8u) == 0x60u && packet->size >= 3) {
+        /* Variable-size rectangle: word 1 position, word 2 size. */
+        minX = (int)((words[1] & 0x7FFu) ^ 1024) - 1024 + state->offsetX;
+        minY = (int)(((words[1] >> 16) & 0x7FFu) ^ 1024) - 1024 +
+               state->offsetY;
+        maxX = minX + (int)(words[2] & 0x3FFu);
+        maxY = minY + (int)((words[2] >> 16) & 0x1FFu);
+    } else {
+        return 0;
+    }
+    return minX <= 16 && maxX >= 304 && minY <= 16 && maxY >= 224;
+}
+
 static void ModernBuildOverlayFrame(const RageSceneSnapshot *snapshot) {
 
     Modern2DState state2d;
@@ -1049,6 +1133,8 @@ static void ModernBuildOverlayFrame(const RageSceneSnapshot *snapshot) {
         if (packet->bucket >= MODERN_BACKGROUND_BUCKET && command < 0xE0u) {
             continue;
         }
+        if (s_xrHudBuild && ModernPacketIsScreenFill(packet, &state2d))
+            continue;
         s_overlay.currentLayer = MODERN_LAYER_HUD;
         ModernReplay2DPacket(packet, &state2d);
     }
@@ -1131,9 +1217,12 @@ static void ModernRenderOverlaySelection(SDL_GPUCommandBuffer *cmd,
                                          SDL_GPUTexture *vram, int passNumber,
                                          uint32_t layerMask, int clearColor) {
     SDL_GPUGraphicsPipeline *pipelines[2] = {s_pipe2d, s_pipe2dSub};
+    /* XR draws the HUD alone into its own transparent panel texture. */
     SDL_GPUColorTargetInfo color = {
-        .texture = s_target,
-        .clear_color = layerMask == (1u << MODERN_LAYER_SKY)
+        .texture = s_overlayTarget != NULL ? s_overlayTarget : s_target,
+        .clear_color = s_overlayTarget != NULL
+                           ? (SDL_FColor){0.0f, 0.0f, 0.0f, 0.0f}
+                       : layerMask == (1u << MODERN_LAYER_SKY)
                            ? ModernSkyClearColor()
                            : (SDL_FColor){0.0f, 0.0f, 0.0f, 1.0f},
         .load_op = clearColor ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD,
@@ -1204,7 +1293,8 @@ static void ModernCompositeNativeMirror(SDL_GPUCommandBuffer *cmd) {
     blit.source.w = (Uint32)s_mirrorTargetW;
     blit.source.h = (Uint32)lroundf(
         (visibleBottom - visibleTop) * (float)s_mirrorTargetH / 36.0f);
-    blit.destination.texture = s_target;
+    blit.destination.texture = s_overlayTarget != NULL ? s_overlayTarget
+                                                       : s_target;
     blit.destination.x = (Uint32)lroundf(
         (86.0f + s_overscanX) * (float)s_targetW / s_logicalW);
     blit.destination.y = (Uint32)lroundf(
@@ -1213,6 +1303,12 @@ static void ModernCompositeNativeMirror(SDL_GPUCommandBuffer *cmd) {
         148.0f * (float)s_targetW / s_logicalW);
     blit.destination.h = (Uint32)lroundf(
         (visibleBottom - visibleTop) * (float)s_targetH / 240.0f);
+    /* While the panel slides in, an interpolated frame can show a sliver
+     * that rounds to no pixels at all; SDL asserts on an empty blit. */
+    if (blit.source.w == 0 || blit.source.h == 0 ||
+        blit.destination.w == 0 || blit.destination.h == 0) {
+        return;
+    }
     blit.load_op = SDL_GPU_LOADOP_LOAD;
     /* A physical rear-view mirror swaps left and right. Rendering from a
      * rear camera supplies the scene; flipping at composition supplies the
@@ -1255,6 +1351,32 @@ void ModernFrameTexturesReady(void) {
             snapshot->frameCounter, captured != NULL);
 }
 
+/* Copies this frame's 2D overlay vertices (sky, HUD, ...) to the GPU.
+ * Returns 0 if the upload could not be recorded. */
+static int ModernUploadOverlay(SDL_GPUCommandBuffer *cmd) {
+    SDL_GPUCopyPass *copy;
+    void *mapped;
+    if (s_overlay.vertexCount <= 0) return 1;
+    mapped = SDL_MapGPUTransferBuffer(s_device, s_vertexTransfer, true);
+    if (mapped == NULL) return 0;
+    memcpy(mapped, s_overlay.vertices,
+           s_overlay.vertexCount * sizeof(ModernVertex));
+    SDL_UnmapGPUTransferBuffer(s_device, s_vertexTransfer);
+    copy = SDL_BeginGPUCopyPass(cmd);
+    if (copy == NULL) return 0;
+    {
+        const SDL_GPUTransferBufferLocation source = {
+            .transfer_buffer = s_vertexTransfer, .offset = 0};
+        const SDL_GPUBufferRegion destination = {
+            .buffer = s_vertexBuffer,
+            .offset = 0,
+            .size = (Uint32)(s_overlay.vertexCount * sizeof(ModernVertex))};
+        SDL_UploadToGPUBuffer(copy, &source, &destination, true);
+    }
+    SDL_EndGPUCopyPass(copy);
+    return 1;
+}
+
 static int ModernRender(const RageSceneSnapshot *snapshot) {
     SDL_GPUCommandBuffer *cmd;
     SDL_GPUTexture *vram;
@@ -1280,32 +1402,9 @@ static int ModernRender(const RageSceneSnapshot *snapshot) {
     if (profile) profileBuilt = SDL_GetTicksNS();
     cmd = SDL_AcquireGPUCommandBuffer(s_device);
     if (cmd == NULL) return 0;
-    if (s_overlay.vertexCount > 0) {
-        SDL_GPUCopyPass *copy;
-        void *mapped = SDL_MapGPUTransferBuffer(s_device, s_vertexTransfer,
-                                                true);
-        if (mapped == NULL) {
-            SDL_CancelGPUCommandBuffer(cmd);
-            return 0;
-        }
-        memcpy(mapped, s_overlay.vertices,
-               s_overlay.vertexCount * sizeof(ModernVertex));
-        SDL_UnmapGPUTransferBuffer(s_device, s_vertexTransfer);
-        copy = SDL_BeginGPUCopyPass(cmd);
-        if (copy == NULL) {
-            SDL_CancelGPUCommandBuffer(cmd);
-            return 0;
-        }
-        {
-            const SDL_GPUTransferBufferLocation source = {
-                .transfer_buffer = s_vertexTransfer, .offset = 0};
-            const SDL_GPUBufferRegion destination = {
-                .buffer = s_vertexBuffer,
-                .offset = 0,
-                .size = (Uint32)(s_overlay.vertexCount * sizeof(ModernVertex))};
-            SDL_UploadToGPUBuffer(copy, &source, &destination, true);
-        }
-        SDL_EndGPUCopyPass(copy);
+    if (!ModernUploadOverlay(cmd)) {
+        SDL_CancelGPUCommandBuffer(cmd);
+        return 0;
     }
     if (s_enabled) {
         static uint64_t reportedIncompleteFrame = UINT64_MAX;
@@ -1570,6 +1669,353 @@ static int ModernWindowOccluded(void) {
         (SDL_WINDOW_OCCLUDED | SDL_WINDOW_MINIMIZED)) != 0;
 }
 
+static int ModernEnsureHudTarget(void) {
+    static int hudW, hudH;
+    SDL_GPUTextureCreateInfo info = {0};
+    if (s_hudTarget != NULL && hudW == s_targetW && hudH == s_targetH)
+        return 1;
+    if (s_hudTarget != NULL) SDL_ReleaseGPUTexture(s_device, s_hudTarget);
+    info.type = SDL_GPU_TEXTURETYPE_2D;
+    info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+                 SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    info.width = (Uint32)s_targetW;
+    info.height = (Uint32)s_targetH;
+    info.layer_count_or_depth = 1;
+    info.num_levels = 1;
+    s_hudTarget = SDL_CreateGPUTexture(s_device, &info);
+    hudW = s_hudTarget ? s_targetW : 0;
+    hudH = s_hudTarget ? s_targetH : 0;
+    return s_hudTarget != NULL;
+}
+
+static float ModernXrGradeSetting(const char *key, float minimum,
+                                  float maximum) {
+    const char *text = RuntimeConfigGet(key);
+    float value = text != NULL ? strtof(text, NULL) : 1.0f;
+    if (!(value >= minimum && value <= maximum)) value = 1.0f;
+    return value;
+}
+
+static int ModernEnsureEyeTargets(unsigned w, unsigned h) {
+    int eye;
+    if (s_eyeTarget[0] != NULL && s_eyeW == w && s_eyeH == h) return 1;
+    /* xr.msaa (default on) renders eyes 4x multisampled. */
+    s_eyeMsaaOn = XrProfileEnabled("xr.msaa") && ModernNativeGpuEyeMsaaReady();
+    if (s_pipeCrackFill == NULL) {
+        /* The fullscreen helper wants MSL too; XR stereo only ever runs on
+         * Vulkan, so the post shader's MSL stands in unused. */
+        /* xr.crack_debug paints every filled pixel magenta. With MSAA the
+         * fill reads resolved alpha coverage instead of depth. */
+        int debug = RuntimeConfigEnabled("xr.crack_debug");
+        const unsigned char *spv;
+        size_t spvLen;
+        if (s_eyeMsaaOn) {
+            spv = debug ? crack_fill_alpha_debug_frag_spv : crack_fill_alpha_frag_spv;
+            spvLen = debug ? crack_fill_alpha_debug_frag_spv_len : crack_fill_alpha_frag_spv_len;
+        } else {
+            spv = debug ? crack_fill_debug_frag_spv : crack_fill_frag_spv;
+            spvLen = debug ? crack_fill_debug_frag_spv_len : crack_fill_frag_spv_len;
+        }
+        s_fragmentUniformBuffers = 1;
+        s_pipeCrackFill = ModernCreateFullscreenPipeline(
+            post_vert_spv, post_vert_spv_len,
+            (const char *)post_vert_msl, post_vert_msl_len, "vs_post",
+            spv, spvLen,
+            (const char *)post_frag_msl, post_frag_msl_len, "fs_post", 2);
+        s_fragmentUniformBuffers = 0;
+        if (s_pipeCrackFill == NULL)
+            fprintf(stderr, "rage-port: XR crack-fill pipeline failed: %s\n",
+                    SDL_GetError());
+    }
+    for (eye = 0; eye < 2; eye++) {
+        SDL_GPUTextureCreateInfo info = {0};
+        if (s_eyeTarget[eye]) SDL_ReleaseGPUTexture(s_device, s_eyeTarget[eye]);
+        if (s_eyeDepth[eye]) SDL_ReleaseGPUTexture(s_device, s_eyeDepth[eye]);
+        if (s_eyeFinal[eye]) SDL_ReleaseGPUTexture(s_device, s_eyeFinal[eye]);
+        if (s_eyeMsaa[eye]) SDL_ReleaseGPUTexture(s_device, s_eyeMsaa[eye]);
+        if (s_eyeMsaaDepth[eye])
+            SDL_ReleaseGPUTexture(s_device, s_eyeMsaaDepth[eye]);
+        s_eyeTarget[eye] = s_eyeDepth[eye] = s_eyeFinal[eye] = NULL;
+        s_eyeMsaa[eye] = s_eyeMsaaDepth[eye] = NULL;
+        info.type = SDL_GPU_TEXTURETYPE_2D;
+        info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+                     SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        info.width = w;
+        info.height = h;
+        info.layer_count_or_depth = 1;
+        info.num_levels = 1;
+        s_eyeTarget[eye] = SDL_CreateGPUTexture(s_device, &info);
+        s_eyeFinal[eye] = SDL_CreateGPUTexture(s_device, &info);
+        info.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+        /* Sampled by the crack fill to tell sky from geometry. */
+        info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET |
+                     SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        s_eyeDepth[eye] = SDL_CreateGPUTexture(s_device, &info);
+        if (s_eyeMsaaOn) {
+            /* Tile-memory only on a tiled GPU: never stored or sampled. */
+            info.sample_count = ModernNativeGpuEyeSampleCount();
+            info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+            s_eyeMsaaDepth[eye] = SDL_CreateGPUTexture(s_device, &info);
+            info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+            info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+            s_eyeMsaa[eye] = SDL_CreateGPUTexture(s_device, &info);
+            if (s_eyeMsaa[eye] == NULL || s_eyeMsaaDepth[eye] == NULL) {
+                fprintf(stderr, "rage-port: XR MSAA targets failed: %s\n",
+                        SDL_GetError());
+                s_eyeW = s_eyeH = 0;
+                return 0;
+            }
+        }
+        if (s_eyeTarget[eye] == NULL || s_eyeDepth[eye] == NULL ||
+            s_eyeFinal[eye] == NULL) {
+            fprintf(stderr, "rage-port: XR eye targets %ux%u failed: %s\n",
+                    w, h, SDL_GetError());
+            s_eyeW = s_eyeH = 0;
+            return 0;
+        }
+    }
+    s_eyeW = w;
+    s_eyeH = h;
+    fprintf(stderr, "rage-port: XR stereo eye targets %ux%u msaa=%s\n", w, h,
+            !s_eyeMsaaOn ? "off"
+            : ModernNativeGpuEyeSampleCount() == SDL_GPU_SAMPLECOUNT_2 ? "2x"
+                                                                      : "4x");
+    return 1;
+}
+
+/* XR: draws the race in stereo from the in-car camera, moved and turned by
+ * the player's head. Returns 0 to fall back to the flat-screen image (menus,
+ * chase and replay cameras, or no XR frame). */
+static int ModernPresentXrStereo(const RageSceneSnapshot *snapshot,
+                                 int fpsMode,
+                                 PsyzPresentSourceInfo *info) {
+    static int stereoEnabled = -1;
+    static int fullVisibility;
+    static int terrainFacing;
+    static int hudFades;
+    static int stereoChase;
+    static int hudEnabled;
+    SDL_GPUTexture *vram = NULL;
+    int hud = 0;
+    static float worldScale;
+    static int loggedScale;
+    PsyzXrView views[2];
+    ModernNativeEyeView eyes[2];
+    unsigned w = 0, h = 0;
+    const RenderWorld *world;
+    SDL_GPUCommandBuffer *cmd;
+    int eye;
+
+    if (stereoEnabled < 0) {
+        stereoEnabled = RuntimeConfigGet("xr.stereo") == NULL ||
+                        RuntimeConfigEnabled("xr.stereo");
+        /* World units per metre of head movement. */
+        worldScale = (float)RuntimeConfigInt("xr.world_scale", 25, 1, 100000);
+        /* Off by default: the authored masks depend on camera position, not
+         * heading, and drawing every cell exposes far sections sliced by the
+         * draw distance as debris in the sky. */
+        fullVisibility = RuntimeConfigEnabled("xr.full_visibility");
+        terrainFacing = RuntimeConfigGet("xr.terrain_facing") == NULL ||
+                        RuntimeConfigEnabled("xr.terrain_facing");
+        hudFades = RuntimeConfigEnabled("xr.hud_fades");
+        stereoChase = RuntimeConfigGet("xr.stereo_chase") == NULL ||
+                      RuntimeConfigEnabled("xr.stereo_chase");
+        hudEnabled = RuntimeConfigGet("xr.hud") == NULL ||
+                     RuntimeConfigEnabled("xr.hud");
+    }
+    /* The player's other race view (behind the car) is the in-car mode with
+     * its low bit flipped; it stays in stereo too unless
+     * xr.stereo_chase = false. Scripted and replay cameras remain flat. */
+    if (!stereoEnabled || !s_enabled ||
+        !(g_Camera.mode == CAMERA_VIEW_CAR ||
+          (stereoChase && snapshot->sceneId == GAME_SCENE_RACE &&
+           g_Camera.mode == (CAMERA_VIEW_CAR ^ 1))) ||
+        !Psyz_XrGetViews(views, &w, &h) || !ModernEnsureEyeTargets(w, h)) {
+        RenderSetOmnidirectionalCulling(0);
+        RenderSetOmnidirectionalFacing(0);
+        GameRenderWorldSetFullVisibility(0);
+        return 0;
+    }
+    /* Takes effect from the next published world (one logic frame). */
+    GameRenderWorldSetFullVisibility(fullVisibility);
+    if (!loggedScale) {
+        /* Calibration aid: the in-car camera's height above the car origin
+         * in world units; a seated driver's eyes are about 1.1 m up. */
+        fprintf(stderr,
+                "rage-port: XR stereo active world_scale=%.1f "
+                "camera_above_car=%d\n",
+                worldScale, (int)(g_PlayerCar.y - g_Camera.view.y));
+        loggedScale = 1;
+    }
+    for (eye = 0; eye < 2; eye++) {
+        memcpy(eyes[eye].position, views[eye].position, sizeof(eyes[eye].position));
+        memcpy(eyes[eye].orientation, views[eye].orientation,
+               sizeof(eyes[eye].orientation));
+        eyes[eye].tanLeft = views[eye].tan_left;
+        eyes[eye].tanRight = views[eye].tan_right;
+        eyes[eye].tanUp = views[eye].tan_up;
+        eyes[eye].tanDown = views[eye].tan_down;
+    }
+    /* Every XR frame needs a fresh image for the new head pose, so render
+     * regardless of the flat presentation clock, interpolating the cars. */
+    if (fpsMode) {
+        const RageSceneSnapshot *target = CaptureCurrent();
+        Uint64 now = SDL_GetTicksNS();
+        float fraction;
+        ModernPresentationClockObserveFrame(&s_presentationClock,
+                                            target->frameCounter, now);
+        fraction = ModernPresentationClockFraction(&s_presentationClock, now);
+#ifdef __ANDROID__
+        /* The observed clock times each tick from whenever an eye frame
+         * first sees it and takes the last gap as the tick length; with
+         * uneven XR frames that swings every tick and near scenery judders.
+         * The VBlank schedule says exactly where in the tick we are (game
+         * speed included). adb shell setprop debug.rr.clock 0 = old clock. */
+        if (XrDebugProp("clock", 1)) {
+            double tickUs = Psyz_VideoVBlankMicroseconds() *
+                            (double)((g_FrameSyncThreshold + 0xFF) / 0x100);
+            double into = Psyz_VideoMicrosecondsSinceVSync();
+            if (tickUs > 0.0) {
+                fraction = (float)(into / tickUs);
+                if (fraction < 0.0f) fraction = 0.0f;
+                if (fraction > 1.0f) fraction = 1.0f;
+            }
+        }
+#endif
+        world = GameRenderWorldPresentation(fraction);
+    } else {
+        world = GameRenderWorldPrevious();
+        if (world == NULL) world = GameRenderWorldCurrent();
+    }
+    /* The pause menu and the end-of-race captions are drawn on the HUD
+     * panel: show it then even if the player has switched the HUD off. */
+    Psyz_XrForceHud(g_RacePaused != 0 || g_RacePhase != RACE_PHASE_ACTIVE);
+    RenderSetOmnidirectionalCulling(1);
+    RenderSetOmnidirectionalFacing(terrainFacing);
+    ModernNativeGpuPrepare(ModernSkyOnlyWorld(world), (float)w / (float)h);
+    /* The game's 2D HUD (speed, laps, times) is drawn on its own into a
+     * transparent texture and shown as a floating panel by psyz. The VRAM
+     * snapshot may submit work of its own, so take it before recording. */
+    if (hudEnabled) {
+        vram = ModernVramSnapshotForFrame(
+            &s_sampledVram, snapshot->frameCounter,
+            ModernNativeGpuTextureRevision(), ModernAssetsGeneration(),
+            ModernCaptureVramSnapshot, NULL);
+        if (vram != NULL && ModernEnsureHudTarget()) {
+            /* xr.hud_fades = true keeps full-screen fades on the panel. */
+            s_xrHudBuild = !hudFades;
+            ModernBuildOverlayFrame(snapshot);
+            s_xrHudBuild = 0;
+            hud = 1;
+        }
+    }
+    cmd = SDL_AcquireGPUCommandBuffer(s_device);
+    if (cmd == NULL) return 0;
+    if (hud && !ModernUploadOverlay(cmd)) hud = 0;
+    if (s_eyeMsaaOn)
+        ModernNativeGpuDrawStereo(cmd, s_eyeMsaa, s_eyeMsaaDepth, s_eyeTarget,
+                                  eyes, worldScale, (int)h);
+    else
+        ModernNativeGpuDrawStereo(cmd, s_eyeTarget, s_eyeDepth, NULL, eyes,
+                                  worldScale, (int)h);
+    if (s_pipeCrackFill != NULL) {
+        /* [xr] saturation, contrast and gamma grade the headset image in
+         * the same pass (1.0 each leaves it as rendered). */
+        static float grade[4];
+        static int gradeLoaded;
+        if (!gradeLoaded) {
+            const char *sharpen = RuntimeConfigGet("xr.sharpen");
+            gradeLoaded = 1;
+            grade[0] = ModernXrGradeSetting("xr.saturation", 0.0f, 2.5f);
+            grade[1] = ModernXrGradeSetting("xr.contrast", 0.5f, 2.0f);
+            grade[2] = ModernXrGradeSetting("xr.gamma", 0.5f, 2.0f);
+            /* [xr] sharpen: 0 (off, the default) to 1. */
+            grade[3] = sharpen != NULL ? strtof(sharpen, NULL) : 0.0f;
+            if (!(grade[3] >= 0.0f && grade[3] <= 1.0f)) grade[3] = 0.0f;
+            fprintf(stderr,
+                    "rage-port: XR colour saturation=%.2f contrast=%.2f "
+                    "gamma=%.2f sharpen=%.2f\n",
+                    grade[0], grade[1], grade[2], grade[3]);
+        }
+        SDL_PushGPUFragmentUniformData(cmd, 0, grade, sizeof(grade));
+        for (eye = 0; eye < 2; eye++) {
+            /* Nearest sampling throughout: D32_FLOAT is commonly not
+             * linearly filterable on mobile GPUs, and sampling it through
+             * a linear sampler is invalid (the depth reads come back
+             * wrong, hiding every crack). */
+            const SDL_GPUColorTargetInfo color = {
+                .texture = s_eyeFinal[eye],
+                .load_op = SDL_GPU_LOADOP_DONT_CARE,
+                .store_op = SDL_GPU_STOREOP_STORE,
+            };
+            /* With MSAA the fill reads coverage from alpha; the depth slot
+             * is bound but unused (its contents were never stored). */
+            const SDL_GPUTextureSamplerBinding bindings[2] = {
+                {.texture = s_eyeTarget[eye], .sampler = s_sampler},
+                {.texture = s_eyeMsaaOn ? s_eyeTarget[eye] : s_eyeDepth[eye],
+                 .sampler = s_sampler},
+            };
+            SDL_GPURenderPass *pass =
+                SDL_BeginGPURenderPass(cmd, &color, 1, NULL);
+            if (pass == NULL) continue;
+            SDL_BindGPUGraphicsPipeline(pass, s_pipeCrackFill);
+            SDL_BindGPUFragmentSamplers(pass, 0, bindings, 2);
+            SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+            SDL_EndGPURenderPass(pass);
+        }
+    }
+    if (hud) {
+        s_overlayTarget = s_hudTarget;
+        ModernRenderOverlaySelection(cmd, vram, 0, 1u << MODERN_LAYER_HUD, 1);
+        /* The rear-view mirror: its frame is part of the HUD, the reflected
+         * scene a separate small render composited into it, as in the
+         * flat view. */
+        if (ModernNativeGpuHasMirrorDraws() && XrDebugProp("mirror", 1)) {
+            /* The mirror re-bins the whole scene for a 592x144 view: ~1.5 ms
+             * of a Quest 3 frame in GPU traces. Re-render it every Nth XR
+             * frame (debug.rr.mirrorrate, default 2 = 36 Hz at 72) and
+             * composite the last image in between. */
+            static unsigned mirrorFrame;
+            int rate = XrDebugProp("mirrorrate", 2);
+            if (rate < 1) rate = 1;
+            if (mirrorFrame++ % (unsigned)rate == 0)
+                ModernNativeGpuDrawMirror(cmd, s_mirrorTarget, s_mirrorDepth,
+                                          s_mirrorTargetH);
+            ModernCompositeNativeMirror(cmd);
+            ModernRenderOverlaySelection(
+                cmd, vram, 1, 1u << MODERN_LAYER_MIRROR_FOREGROUND, 0);
+        }
+        s_overlayTarget = NULL;
+    }
+    if (XrDebugProp("stats", 0)) {
+        /* adb shell setprop debug.rr.stats 1: one line a second or so. */
+        static unsigned frames;
+        const RenderWorld *prepared = ModernNativeGpuPreparedWorld();
+        if (prepared != NULL && ++frames % 120 == 0)
+            fprintf(stderr, "rage-port: xr-stats instances=%u spots=%u "
+                    "mirror=%d allrivals=%d\n", prepared->instanceCount,
+                    prepared->spotLightCount, prepared->mirrorActive,
+                    XrDebugProp("allrivals", 1));
+    }
+    if (!SDL_SubmitGPUCommandBuffer(cmd)) {
+        fprintf(stderr, "rage-port: XR stereo submit failed: %s\n",
+                SDL_GetError());
+        return 0;
+    }
+    ModernNativeGpuSubmitted();
+    info->texture = NULL;
+    info->hud = hud ? s_hudTarget : NULL;
+    info->hud_w = (Uint32)s_targetW;
+    info->hud_h = (Uint32)s_targetH;
+    info->stereo[0] = s_pipeCrackFill != NULL ? s_eyeFinal[0] : s_eyeTarget[0];
+    info->stereo[1] = s_pipeCrackFill != NULL ? s_eyeFinal[1] : s_eyeTarget[1];
+    info->stereo_w = w;
+    info->stereo_h = h;
+    return 1;
+}
+
 static void ModernPresentSource(PsyzPresentSourceInfo *info) {
     const RageSceneSnapshot *snapshot;
     int fpsMode;
@@ -1722,6 +2168,7 @@ static void ModernPresentSource(PsyzPresentSourceInfo *info) {
      * complete classic stream instead of displaying its HUD without geometry. */
     if (!s_enabled && CaptureClassicSources(snapshot) == NULL) return;
     if (!ModernEnsureResources()) { info->skip_present = true; return; }
+    if (ModernPresentXrStereo(snapshot, fpsMode, info)) return;
 
     if (fpsMode) {
         const RageSceneSnapshot *target = CaptureCurrent();
@@ -1804,10 +2251,58 @@ void ModernFrameWaitTick(int frameLimit) {
     if (CaptureCurrent()->faceCount == 0) return;
     if (!ModernPresentationClockDue(&s_presentationClock, SDL_GetTicksNS(),
                                     ModernPresentationInterval())) return;
+    /* An intermediate frame that ends past the game's tick deadline makes
+     * that tick late. Skip it when the recent ones say it would not fit;
+     * the caller's VSync(0) presents at the deadline anyway. */
+    static double s_intermediateUs;
+    /* XR frame slots: when the last intermediate frame returned (its slot)
+     * and the measured spacing between slots. */
+    static Uint64 s_lastSlotNs;
+    static double s_slotUs;
+#ifdef __ANDROID__
+    /* debug.rr.guard: 2 = don't start an XR frame whose display slot would
+     * fall after this tick's deadline (such a frame is clamped to the end of
+     * the tick, so the next one jumps). 1 = the old duration-based guard,
+     * 0 (default) = off. Measured GPU bound in the canyon on a Quest 3: the
+     * guard left the GPU 11-14% idle (55 fps vs 63 without), and driving
+     * felt smoother without it. */
+    {
+        int guard = XrDebugProp("guard", 0);
+        double vblank = Psyz_VideoVBlankMicroseconds();
+        double deadline = vblank * (double)((frameLimit + 0xFF) / 0x100);
+        double since = Psyz_VideoMicrosecondsSinceVSync();
+        if (guard == 1 && since + s_intermediateUs > deadline) return;
+        if (guard == 2 && s_lastSlotNs != 0 && s_slotUs > 0.0) {
+            double nextSlotIn =
+                s_slotUs - (double)(SDL_GetTicksNS() - s_lastSlotNs) / 1000.0;
+            if (nextSlotIn < 0.0) nextSlotIn = 0.0;
+            if (since + nextSlotIn > deadline) return;
+        }
+    }
+#endif
+    Uint64 intermediateStart = SDL_GetTicksNS();
     Uint64 presentStart = s_profileTiming ? SDL_GetTicksNS() : 0;
     SDL_WindowFlags flagsBefore = s_profileTiming && s_window
         ? SDL_GetWindowFlags(s_window) : 0;
     Psyz_VideoPresentIntermediate();
+    {
+        /* Rising fast, falling slowly: a slow frame is the one to avoid. */
+        double took = (double)(SDL_GetTicksNS() - intermediateStart) / 1000.0;
+        s_intermediateUs = took > s_intermediateUs
+            ? took : s_intermediateUs * 0.9 + took * 0.1;
+    }
+    {
+        /* XR presents return at their display slot; track the spacing. A
+         * gap of several slots (a tick boundary) is not a slot period. */
+        Uint64 slot = SDL_GetTicksNS();
+        if (s_lastSlotNs != 0) {
+            double gap = (double)(slot - s_lastSlotNs) / 1000.0;
+            if (gap > 2000.0 &&
+                gap < (s_slotUs > 0.0 ? s_slotUs * 1.5 : 20000.0))
+                s_slotUs = s_slotUs > 0.0 ? s_slotUs * 0.9 + gap * 0.1 : gap;
+        }
+        s_lastSlotNs = slot;
+    }
     if (s_profileTiming) {
         Uint64 elapsed = SDL_GetTicksNS() - presentStart;
         if (elapsed > 20000000u) {

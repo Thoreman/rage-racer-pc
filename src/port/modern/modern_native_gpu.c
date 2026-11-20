@@ -26,6 +26,10 @@
 #include "rage/track_asset_identity.h"
 
 #include "shaders/native_color_frag_spv.h"
+#include "shaders/native_color_coverage_frag_spv.h"
+#include "shaders/native_texture_coverage_frag_spv.h"
+#include "shaders/native_texture_xr_frag_spv.h"
+#include "shaders/native_texture_solid_frag_spv.h"
 #include "shaders/native_sky_frag_spv.h"
 #include "shaders/native_sky_vert_spv.h"
 #include "shaders/native_texture_frag_spv.h"
@@ -49,6 +53,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../xr_profile.h"
 
 /*
  * The texture cache holds one entry per material and is emptied whole when the
@@ -114,6 +119,9 @@ typedef struct ModernNativeTexture {
     RenderAssetSet assetSet;
     RageRenderMaterial definition;
     int transparent;
+    /* Opaque with no transparent texels at all: its shader can never
+     * discard, so XR eyes may draw it with the no-discard pipeline. */
+    int solid;
     SDL_GPUTexture *texture;
 } ModernNativeTexture;
 
@@ -301,6 +309,21 @@ static SDL_GPUShader *ModernNativeCreateShader(
     return SDL_CreateGPUShader(s_device, &info);
 }
 
+/* Mip levels built per texture page. Deeper than the atlas-safe four blends
+ * unrelated atlas entries, visibly recolouring distant surfaces (grandstands
+ * turn grey), so it stays opt-in. */
+static uint32_t ModernNativeMipLevels(void) {
+    static int levels = -1;
+    if (levels < 0)
+        levels = RuntimeConfigInt("render.texture_mip_levels",
+                                  RAGE_TEXTURE_ATLAS_MIP_LEVELS, 1, 12);
+    return (uint32_t)levels;
+}
+
+/* Sample count applied by the pipeline constructors below; the XR eye set
+ * is built at 4x while the default set stays single-sampled. */
+static SDL_GPUSampleCount s_createSamples = SDL_GPU_SAMPLECOUNT_1;
+
 static SDL_GPUGraphicsPipeline *ModernNativeCreatePipeline(
     SDL_GPUShader *vertex, SDL_GPUShader *fragment, int transparent) {
     const SDL_GPUVertexBufferDescription buffer = {
@@ -361,13 +384,16 @@ static SDL_GPUGraphicsPipeline *ModernNativeCreatePipeline(
     info.rasterizer_state.enable_depth_clip = true;
     /* Semantic decals are already real, slightly lifted world geometry. They
      * use the same depth test as every other opaque surface. */
-    info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+    info.depth_stencil_state.compare_op = s_createSamples != SDL_GPU_SAMPLECOUNT_1
+        ? SDL_GPU_COMPAREOP_GREATER_OR_EQUAL /* XR eyes: reversed-Z */
+        : SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
     info.depth_stencil_state.enable_depth_test = true;
     /* Every opaque surface must participate in the Z buffer, including the
      * later coplanar-detail phase. Imported terrain OT bias is not a semantic
      * decal marker: tunnel and road faces can carry it too. Leaving that
      * phase read-only lets a later, farther face overwrite nearer geometry. */
     info.depth_stencil_state.enable_depth_write = !transparent;
+    info.multisample_state.sample_count = s_createSamples;
     info.target_info.color_target_descriptions = &color;
     info.target_info.num_color_targets = 1;
     info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
@@ -424,6 +450,15 @@ static SDL_GPUGraphicsPipeline *ModernNativeCreateSkyPipeline(
     info.fragment_shader = fragment;
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    info.multisample_state.sample_count = s_createSamples;
+    if (s_createSamples != SDL_GPU_SAMPLECOUNT_1) {
+        /* XR coverage: the sky leaves alpha at its cleared zero, so after
+         * the MSAA resolve alpha measures how much geometry covers a pixel. */
+        color.blend_state.enable_color_write_mask = true;
+        color.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R |
+                                 SDL_GPU_COLORCOMPONENT_G |
+                                 SDL_GPU_COLORCOMPONENT_B;
+    }
     info.target_info.color_target_descriptions = &color;
     info.target_info.num_color_targets = 1;
     info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
@@ -468,6 +503,82 @@ static void ModernNativeRotate(float out[3], const float in[3],
     out[0] = x; out[1] = y; out[2] = z;
 }
 
+/* Non-NULL while an XR eye is being drawn: the main-pass camera becomes the
+ * game camera moved and turned by that eye's head pose. */
+static const ModernNativeEyeView *s_eye;
+static float s_eyeWorldScale = 1.0f;
+/* MSAA resolve target while drawing an XR eye (multisampled, reversed-Z). */
+static SDL_GPUTexture *s_eyeResolve;
+
+static void ModernNativeApplyEye(const ModernNativeEyeView *eye,
+                                 float worldScale,
+                                 ModernNativeCameraUniform *out) {
+    float game[3][3], head[3][3], rows[3][3];
+    float qx = eye->orientation[0], qy = eye->orientation[1];
+    float qz = eye->orientation[2], qw = eye->orientation[3];
+    float length = sqrtf(qx * qx + qy * qy + qz * qz + qw * qw);
+    int i, j, k;
+
+    if (!(length > 0.0f)) return;
+    qx /= length; qy /= length; qz /= length; qw /= length;
+    /* Columns are the eye's axes expressed in the game camera's view axes. */
+    head[0][0] = 1.0f - 2.0f * (qy * qy + qz * qz);
+    head[0][1] = 2.0f * (qx * qy - qw * qz);
+    head[0][2] = 2.0f * (qx * qz + qw * qy);
+    head[1][0] = 2.0f * (qx * qy + qw * qz);
+    head[1][1] = 1.0f - 2.0f * (qx * qx + qz * qz);
+    head[1][2] = 2.0f * (qy * qz - qw * qx);
+    head[2][0] = 2.0f * (qx * qz - qw * qy);
+    head[2][1] = 2.0f * (qy * qz + qw * qx);
+    head[2][2] = 1.0f - 2.0f * (qx * qx + qy * qy);
+    for (k = 0; k < 3; k++) {
+        game[0][k] = out->viewRow0[k];
+        game[1][k] = out->viewRow1[k];
+        game[2][k] = out->viewRow2[k];
+    }
+    /* Game view axis j points along game[j] in the world, so eye axis i
+     * points along sum_j head[j][i] * game[j]. */
+    for (i = 0; i < 3; i++)
+        for (k = 0; k < 3; k++) {
+            rows[i][k] = 0.0f;
+            for (j = 0; j < 3; j++) rows[i][k] += head[j][i] * game[j][k];
+        }
+    for (k = 0; k < 3; k++) {
+        float offset = 0.0f;
+        for (j = 0; j < 3; j++)
+            offset += eye->position[j] * worldScale * game[j][k];
+        out->position[k] += offset;
+        out->viewRow0[k] = rows[0][k];
+        out->viewRow1[k] = rows[1][k];
+        out->viewRow2[k] = rows[2][k];
+    }
+    /* Reversed-Z for the MSAA eye pass: near maps to 1 and far to 0, which
+     * with a float depth buffer spreads precision across the whole draw
+     * distance. Standard depth runs out of precision some way out, where
+     * lifted decals and their surfaces start to fight and the distance
+     * shimmers like heat haze. With z = scale + offset/depth the reversed
+     * terms are (1 - scale, -offset). */
+    if (s_eyeResolve != NULL) {
+        out->projection[2] = 1.0f - out->projection[2];
+        out->projection[3] = -out->projection[3];
+    }
+    /* Head-independent fog (see native.vert); xr.radial_fog, default on. */
+    {
+        static int radialFog = -1;
+        if (radialFog < 0)
+            radialFog = RuntimeConfigGet("xr.radial_fog") == NULL ||
+                        RuntimeConfigEnabled("xr.radial_fog");
+        out->position[3] = radialFog ? 1.0f : 0.0f;
+    }
+    /* Off-axis projection: scales plus centre offsets (see native.vert). */
+    out->projection[0] = 2.0f / (eye->tanRight - eye->tanLeft);
+    out->projection[1] = 2.0f / (eye->tanUp - eye->tanDown);
+    out->viewRow0[3] = -(eye->tanRight + eye->tanLeft) /
+                       (eye->tanRight - eye->tanLeft);
+    out->viewRow1[3] = -(eye->tanUp + eye->tanDown) /
+                       (eye->tanUp - eye->tanDown);
+}
+
 static int ModernNativeBuildCamera(const RenderCamera *camera, float aspect,
                                     ModernNativeCameraUniform *out) {
     static const float axes[3][3] = {
@@ -499,6 +610,7 @@ static int ModernNativeBuildCamera(const RenderCamera *camera, float aspect,
         out->fogRange[2] = 1.0f / camera->fogNear;
         out->fogRange[3] = out->fogRange[2] - 1.0f / camera->fogFar;
     }
+    if (s_eye != NULL) ModernNativeApplyEye(s_eye, s_eyeWorldScale, out);
     return 1;
 }
 
@@ -615,7 +727,10 @@ static SDL_GPUGraphicsPipeline *CreateLampGlow(void) {
         info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
         info.rasterizer_state.enable_depth_clip = true;
         info.depth_stencil_state.enable_depth_test = true;
-        info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+        info.depth_stencil_state.compare_op = s_createSamples != SDL_GPU_SAMPLECOUNT_1
+        ? SDL_GPU_COMPAREOP_GREATER_OR_EQUAL /* XR eyes: reversed-Z */
+        : SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+        info.multisample_state.sample_count = s_createSamples;
         info.target_info.color_target_descriptions = &color;
         info.target_info.num_color_targets = 1;
         info.target_info.has_depth_stencil_target = true;
@@ -626,6 +741,136 @@ static SDL_GPUGraphicsPipeline *CreateLampGlow(void) {
     if (fragment) SDL_ReleaseGPUShader(s_device, fragment);
     return pipeline;
 }
+
+/* XR eyes render 4x multisampled: thin road markings and fences are often
+ * narrower than a headset pixel and break up into crawling dashes without
+ * it. Built on first use; the flat renderer never pays for it. */
+typedef struct ModernNativePipelineSet {
+    SDL_GPUGraphicsPipeline *texturedOpaque, *texturedTransparent;
+    SDL_GPUGraphicsPipeline *texturedOpaqueDecal, *texturedTransparentDecal;
+    SDL_GPUGraphicsPipeline *colorOpaque, *colorOpaqueDecal;
+    SDL_GPUGraphicsPipeline *sky, *lampGlow;
+    /* XR only: opaque materials with no transparent texels, no discard. */
+    SDL_GPUGraphicsPipeline *texturedSolid;
+} ModernNativePipelineSet;
+static ModernNativePipelineSet s_msaa;
+static int s_msaaState; /* 0 untried, 1 ready, -1 unavailable */
+
+static void ModernNativeReleaseMsaaPipelines(void) {
+    SDL_GPUGraphicsPipeline **all[] = {
+        &s_msaa.texturedOpaque, &s_msaa.texturedTransparent,
+        &s_msaa.texturedOpaqueDecal, &s_msaa.texturedTransparentDecal,
+        &s_msaa.colorOpaque, &s_msaa.colorOpaqueDecal, &s_msaa.sky,
+        &s_msaa.lampGlow, &s_msaa.texturedSolid};
+    size_t i;
+    for (i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
+        if (*all[i] && s_device) SDL_ReleaseGPUGraphicsPipeline(s_device, *all[i]);
+        *all[i] = NULL;
+    }
+    s_msaaState = 0;
+}
+
+/* XR eye multisampling: [xr] msaa_samples = 2 (default) or 4. Fewer samples
+ * cost less of the fragment-bound eye passes, which can be spent on eye
+ * resolution instead. Every MSAA eye pipeline and target uses this count. */
+SDL_GPUSampleCount ModernNativeGpuEyeSampleCount(void) {
+    static int samples;
+    if (samples == 0) {
+        samples = RuntimeConfigInt("xr.msaa_samples", 2, 2, 4) <= 2 ? 2 : 4;
+        fprintf(stderr, "rage-port: XR MSAA samples %d\n", samples);
+    }
+    return samples == 2 ? SDL_GPU_SAMPLECOUNT_2 : SDL_GPU_SAMPLECOUNT_4;
+}
+
+int ModernNativeGpuEyeMsaaReady(void) {
+    SDL_GPUShader *vertex, *skyVertex, *skyFragment;
+    SDL_GPUShader *textureFragment, *textureCoverage, *colorCoverage;
+    SDL_GPUShader *textureSolid;
+    SDL_GPUSampleCount samples = ModernNativeGpuEyeSampleCount();
+    if (s_msaaState != 0) return s_msaaState > 0;
+    s_msaaState = -1;
+    if (s_device == NULL ||
+        !SDL_GPUTextureSupportsSampleCount(s_device,
+                                           SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                                           samples) ||
+        !SDL_GPUTextureSupportsSampleCount(s_device,
+                                           SDL_GPU_TEXTUREFORMAT_D32_FLOAT,
+                                           samples)) {
+        fprintf(stderr, "rage-port: XR MSAA unsupported on this GPU\n");
+        return 0;
+    }
+    /* Coverage variants reuse the ordinary MSL; XR only runs on Vulkan. */
+    vertex = ModernNativeCreateShader(
+        native_vert_spv, native_vert_spv_len,
+        native_vert_msl, native_vert_msl_len, "vs_native",
+        SDL_GPU_SHADERSTAGE_VERTEX, 0, 0, 4);
+    skyVertex = ModernNativeCreateShader(
+        native_sky_vert_spv, native_sky_vert_spv_len,
+        native_sky_vert_msl, native_sky_vert_msl_len, "vs_native_sky",
+        SDL_GPU_SHADERSTAGE_VERTEX, 0, 0, 1);
+    skyFragment = ModernNativeCreateShader(
+        native_sky_frag_spv, native_sky_frag_spv_len,
+        native_sky_frag_msl, native_sky_frag_msl_len, "fs_native_sky",
+        SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0, 1);
+    /* Transparent eye materials: footprint supersampling, real alpha. */
+    textureFragment = ModernNativeCreateShader(
+        native_texture_xr_frag_spv, native_texture_xr_frag_spv_len,
+        native_texture_frag_msl, native_texture_frag_msl_len, "fs_native",
+        SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 4, 2);
+    textureCoverage = ModernNativeCreateShader(
+        native_texture_coverage_frag_spv, native_texture_coverage_frag_spv_len,
+        native_texture_frag_msl, native_texture_frag_msl_len, "fs_native",
+        SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 4, 2);
+    colorCoverage = ModernNativeCreateShader(
+        native_color_coverage_frag_spv, native_color_coverage_frag_spv_len,
+        native_color_frag_msl, native_color_frag_msl_len, "fs_native_color",
+        SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 4, 1);
+    textureSolid = ModernNativeCreateShader(
+        native_texture_solid_frag_spv, native_texture_solid_frag_spv_len,
+        native_texture_frag_msl, native_texture_frag_msl_len, "fs_native",
+        SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 4, 2);
+    s_createSamples = samples;
+    /* Optional: without it solid materials keep the discard pipeline. */
+    if (vertex && textureSolid)
+        s_msaa.texturedSolid = ModernNativeCreatePipeline(vertex, textureSolid, 0);
+    if (textureSolid) SDL_ReleaseGPUShader(s_device, textureSolid);
+    if (vertex && textureFragment && textureCoverage && colorCoverage &&
+        skyVertex && skyFragment) {
+        s_msaa.texturedOpaque = ModernNativeCreatePipeline(vertex, textureCoverage, 0);
+        s_msaa.texturedTransparent = ModernNativeCreatePipeline(vertex, textureFragment, 1);
+        s_msaa.texturedOpaqueDecal = ModernNativeCreatePipeline(vertex, textureCoverage, 0);
+        s_msaa.texturedTransparentDecal = ModernNativeCreatePipeline(vertex, textureFragment, 1);
+        s_msaa.colorOpaque = ModernNativeCreatePipeline(vertex, colorCoverage, 0);
+        s_msaa.colorOpaqueDecal = ModernNativeCreatePipeline(vertex, colorCoverage, 0);
+        s_msaa.sky = ModernNativeCreateSkyPipeline(skyVertex, skyFragment);
+        s_msaa.lampGlow = CreateLampGlow();
+    }
+    s_createSamples = SDL_GPU_SAMPLECOUNT_1;
+    if (vertex) SDL_ReleaseGPUShader(s_device, vertex);
+    if (skyVertex) SDL_ReleaseGPUShader(s_device, skyVertex);
+    if (skyFragment) SDL_ReleaseGPUShader(s_device, skyFragment);
+    if (textureFragment) SDL_ReleaseGPUShader(s_device, textureFragment);
+    if (textureCoverage) SDL_ReleaseGPUShader(s_device, textureCoverage);
+    if (colorCoverage) SDL_ReleaseGPUShader(s_device, colorCoverage);
+    if (!s_msaa.texturedOpaque || !s_msaa.texturedTransparent ||
+        !s_msaa.texturedOpaqueDecal || !s_msaa.texturedTransparentDecal ||
+        !s_msaa.colorOpaque || !s_msaa.colorOpaqueDecal || !s_msaa.sky ||
+        !s_msaa.lampGlow) {
+        fprintf(stderr, "rage-port: XR MSAA pipelines failed: %s\n",
+                SDL_GetError());
+        ModernNativeReleaseMsaaPipelines();
+        s_msaaState = -1;
+        return 0;
+    }
+    s_msaaState = 1;
+    fprintf(stderr, "rage-port: XR %dx MSAA pipelines ready\n",
+            samples == SDL_GPU_SAMPLECOUNT_2 ? 2 : 4);
+    return 1;
+}
+
+/* The pipeline for `name` in the current pass: the MSAA set while drawing
+ * an XR eye into a multisampled target, otherwise the default set. */
+#define NATIVE_PIPE(name)     (s_eyeResolve != NULL ? s_msaa.name : s_##name)
 
 int ModernNativeGpuInit(SDL_GPUDevice *device, int linearTextureFilter) {
     SDL_GPUShader *vertex = NULL, *skyVertex = NULL, *shadowVertex = NULL;
@@ -1388,7 +1633,7 @@ static ModernNativeTexture *ModernNativeLoadTexture(
         loadStart += hashNs;
     }
     mipLevels = TextureMipLevelCount(
-        image.width, image.height, RAGE_TEXTURE_ATLAS_MIP_LEVELS);
+        image.width, image.height, ModernNativeMipLevels());
     mipSize = TextureMipChainSizeRGBA8(
         image.width, image.height, mipLevels);
     /* SDL transfer sizes and per-level offsets are Uint32. */
@@ -1449,8 +1694,10 @@ static ModernNativeTexture *ModernNativeLoadTexture(
     ModernNativeRetireUpload(upload);
     upload = NULL;
     entry->transparent = 0;
+    entry->solid = 1;
     for (byte = 3; byte < image.size; byte += 4) {
         uint8_t alpha = ((const uint8_t *)image.pixels)[byte];
+        if (alpha != 255) entry->solid = 0;
         if (alpha != 0 && alpha != 255) {
             entry->transparent = 1;
             break;
@@ -1460,6 +1707,10 @@ static ModernNativeTexture *ModernNativeLoadTexture(
         entry->transparent = 1;
     else if (materialDefinition.alphaMode != RAGE_RENDER_MATERIAL_ALPHA_AUTO)
         entry->transparent = 0;
+    /* Masked materials discard by design; never give them the solid path. */
+    if (entry->transparent ||
+        materialDefinition.alphaMode == RAGE_RENDER_MATERIAL_ALPHA_MASK)
+        entry->solid = 0;
     free(mipChain);
     ModernAssetsFreeMaterialImage(&image);
     entry->assetKey = span->assetKey;
@@ -1934,11 +2185,15 @@ static ModernNativeDrawMaterial ModernNativeResolveDrawMaterial(
     result.texture = texture;
     result.phase = texture && texture->transparent ? 3 : span->depthDecal ? 1 : vehicle ? 2 : 0;
     if (!texture)
-        result.pipeline = span->depthDecal ? s_colorOpaqueDecal : s_colorOpaque;
+        result.pipeline = span->depthDecal ? NATIVE_PIPE(colorOpaqueDecal) : NATIVE_PIPE(colorOpaque);
     else if (span->depthDecal)
-        result.pipeline = texture->transparent ? s_texturedTransparentDecal : s_texturedOpaqueDecal;
+        result.pipeline = texture->transparent ? NATIVE_PIPE(texturedTransparentDecal) : NATIVE_PIPE(texturedOpaqueDecal);
+    else if (texture->solid && s_eyeResolve != NULL && s_msaa.texturedSolid &&
+             XrDebugProp("solid", 1))
+        /* XR eye, no transparent texels: keep early depth rejection. */
+        result.pipeline = s_msaa.texturedSolid;
     else
-        result.pipeline = texture->transparent ? s_texturedTransparent : s_texturedOpaque;
+        result.pipeline = texture->transparent ? NATIVE_PIPE(texturedTransparent) : NATIVE_PIPE(texturedOpaque);
     return result;
 }
 
@@ -1946,8 +2201,8 @@ static ModernNativeDrawMaterial ModernNativeResolveDrawMaterial(
  * surfaces. Its billboard cannot reveal a lamp hidden behind opaque scenery. */
 static void DrawLampGlows(SDL_GPUCommandBuffer *command, SDL_GPURenderPass *pass,
                           const RenderCamera *view, const ModernNativeCameraUniform *camera) {
-    if (!s_lampGlow || !s_world->spotLightCount) return;
-    SDL_BindGPUGraphicsPipeline(pass, s_lampGlow);
+    if (!NATIVE_PIPE(lampGlow) || !s_world->spotLightCount) return;
+    SDL_BindGPUGraphicsPipeline(pass, NATIVE_PIPE(lampGlow));
     for (uint32_t i = 0; i < s_world->spotLightCount; ++i) {
         const SpotLight *lamp = &s_world->spotLights[i];
         Vec3 delta = {view->transform.position.x - lamp->position.x,
@@ -1964,14 +2219,40 @@ static void DrawLampGlows(SDL_GPUCommandBuffer *command, SDL_GPURenderPass *pass
                              -delta.y + lamp->direction.y * 3.0f,
                              -delta.z + lamp->direction.z * 3.0f};
         float position[3];
-        ModernNativeRotate(position, relative, view);
+        float offAxisX = 0.0f, offAxisY = 0.0f;
+        if (s_eye != NULL) {
+            /* XR eye: the halo must be placed with the eye's own position,
+             * axes and off-axis projection centre (all in the camera
+             * uniform), or it drifts off its lamp as the head turns and
+             * sits at a different depth in each eye. */
+            int axis;
+            for (axis = 0; axis < 3; axis++)
+                relative[axis] += view->transform.position.x * (axis == 0) +
+                                  view->transform.position.y * (axis == 1) +
+                                  view->transform.position.z * (axis == 2) -
+                                  camera->position[axis];
+            position[0] = camera->viewRow0[0] * relative[0] +
+                          camera->viewRow0[1] * relative[1] +
+                          camera->viewRow0[2] * relative[2];
+            position[1] = camera->viewRow1[0] * relative[0] +
+                          camera->viewRow1[1] * relative[1] +
+                          camera->viewRow1[2] * relative[2];
+            position[2] = camera->viewRow2[0] * relative[0] +
+                          camera->viewRow2[1] * relative[1] +
+                          camera->viewRow2[2] * relative[2];
+            offAxisX = camera->viewRow0[3];
+            offAxisY = camera->viewRow1[3];
+        } else {
+            ModernNativeRotate(position, relative, view);
+        }
         float depth = -position[2];
         if (depth <= view->nearPlane) continue;
         float strength = fmaxf(lamp->color.x, fmaxf(lamp->color.y, lamp->color.z));
         if (strength <= 0) continue;
         float radius = fminf(12, fmaxf(6, distance * 0.04f));
-        float transform[8] = {position[0] * camera->projection[0],
-            position[1] * camera->projection[1],
+        float transform[8] = {
+            position[0] * camera->projection[0] + depth * offAxisX,
+            position[1] * camera->projection[1] + depth * offAxisY,
             depth * camera->projection[2] + camera->projection[3], depth,
             radius * camera->projection[0], radius * camera->projection[1], 0, 0};
         float intensity = fminf(strength, 1) * fminf((facing - 0.1f) * 2, 1) * 0.65f;
@@ -1982,6 +2263,108 @@ static void DrawLampGlows(SDL_GPUCommandBuffer *command, SDL_GPURenderPass *pass
         SDL_PushGPUVertexUniformData(command, 0, transform, sizeof(transform));
         SDL_PushGPUFragmentUniformData(command, 0, color, sizeof(color));
         SDL_DrawGPUPrimitives(pass, 6, 1, 0, 0);
+    }
+}
+
+/* Opaque scenery (phase 0) nearest first by the distance of a few of each
+ * span's world vertices; every other span keeps its authored position, and
+ * as the draw loop filters by phase only order within a phase matters. */
+static const float *s_sortKeys;
+static int ModernNativeCompareOrder(const void *left, const void *right) {
+    const uint32_t a = *(const uint32_t *)left, b = *(const uint32_t *)right;
+    if (s_sortKeys[a] != s_sortKeys[b]) return s_sortKeys[a] < s_sortKeys[b] ? -1 : 1;
+    return a < b ? -1 : a > b;
+}
+
+static void ModernNativeSortScenery(uint32_t *order,
+                                    const RageNativeDrawSpan *spans,
+                                    const ModernNativeDrawMaterial *materials,
+                                    uint32_t spanCount, Vec3 eye) {
+    static float keys[MODERN_NATIVE_MAX_SPANS];
+    uint32_t i, sorted = 0;
+    for (i = 0; i < spanCount; i++) {
+        const RageNativeDrawSpan *span = &spans[i];
+        keys[i] = -1.0f; /* unsorted spans: before scenery, original order */
+        if (materials[i].phase != 0 || span->localGeometry != NULL ||
+            span->vertexCount == 0 ||
+            span->firstVertex + span->vertexCount > s_vertexCount) continue;
+        {
+            const uint32_t pick[3] = {span->firstVertex,
+                span->firstVertex + span->vertexCount / 2,
+                span->firstVertex + span->vertexCount - 1};
+            float nearest = 3.0e38f;
+            for (unsigned k = 0; k < 3; k++) {
+                const float *p = s_vertices[pick[k]].position;
+                float dx = p[0] - eye.x, dy = p[1] - eye.y, dz = p[2] - eye.z;
+                float d = dx * dx + dy * dy + dz * dz;
+                if (d < nearest) nearest = d;
+            }
+            keys[i] = nearest;
+            sorted++;
+        }
+    }
+    if (sorted < 2) return;
+    s_sortKeys = keys;
+    qsort(order, spanCount, sizeof(*order), ModernNativeCompareOrder);
+}
+
+/* Per-eye span culling: a bounding sphere per world-space span against the
+ * eye's off-axis frustum, in the view space ModernNativeBuildCamera made
+ * (view = rows . (p - position), depth = -view.z, x within [tanLeft,
+ * tanRight] * depth, y within [tanDown, tanUp] * depth). Spans drawn from
+ * local templates (vehicles) have no world vertices here and always draw. */
+static void ModernNativeCullForEye(uint8_t *visible,
+                                   const RageNativeDrawSpan *spans,
+                                   uint32_t spanCount,
+                                   const ModernNativeCameraUniform *camera,
+                                   const ModernNativeEyeView *eye) {
+    const float *r0 = camera->viewRow0, *r1 = camera->viewRow1,
+                *r2 = camera->viewRow2, *c = camera->position;
+    /* Side planes through the eye: inside when dot(n, view) >= 0. */
+    const float planes[4][2] = {
+        {1.0f, eye->tanLeft},    /* x - tanLeft * d >= 0 */
+        {-1.0f, -eye->tanRight}, /* tanRight * d - x >= 0 */
+        {1.0f, eye->tanDown},    /* y - tanDown * d >= 0 */
+        {-1.0f, -eye->tanUp},    /* tanUp * d - y >= 0 */
+    };
+    float lengths[4];
+    for (unsigned p = 0; p < 4; p++)
+        lengths[p] = sqrtf(1.0f + planes[p][1] * planes[p][1]);
+    for (uint32_t i = 0; i < spanCount; i++) {
+        const RageNativeDrawSpan *span = &spans[i];
+        float lo[3] = {3.0e38f, 3.0e38f, 3.0e38f};
+        float hi[3] = {-3.0e38f, -3.0e38f, -3.0e38f};
+        float center[3], radius = 0.0f, rel[3], view[3], depth;
+        visible[i] = 1;
+        if (span->localGeometry != NULL || span->vertexCount == 0 ||
+            span->firstVertex + span->vertexCount > s_vertexCount) continue;
+        for (uint32_t v = span->firstVertex;
+             v < span->firstVertex + span->vertexCount; v++) {
+            const float *p = s_vertices[v].position;
+            for (unsigned a = 0; a < 3; a++) {
+                if (p[a] < lo[a]) lo[a] = p[a];
+                if (p[a] > hi[a]) hi[a] = p[a];
+            }
+        }
+        for (unsigned a = 0; a < 3; a++) {
+            center[a] = 0.5f * (lo[a] + hi[a]);
+            radius += (hi[a] - lo[a]) * (hi[a] - lo[a]);
+            rel[a] = center[a] - c[a];
+        }
+        /* Half the box diagonal, plus slack for the depth-bias and decal
+         * lifts the vertex shader applies. */
+        radius = 0.5f * sqrtf(radius) + 4.0f;
+        view[0] = r0[0] * rel[0] + r0[1] * rel[1] + r0[2] * rel[2];
+        view[1] = r1[0] * rel[0] + r1[1] * rel[1] + r1[2] * rel[2];
+        view[2] = r2[0] * rel[0] + r2[1] * rel[1] + r2[2] * rel[2];
+        depth = -view[2];
+        if (depth < -radius) { visible[i] = 0; continue; }
+        for (unsigned p = 0; p < 4; p++) {
+            const float axis = p < 2 ? view[0] : view[1];
+            const float distance =
+                (planes[p][0] * axis - planes[p][1] * depth) / lengths[p];
+            if (distance < -radius) { visible[i] = 0; break; }
+        }
     }
 }
 
@@ -1997,15 +2380,25 @@ static void ModernNativeGpuDrawSet(
         .clear_color = {renderCamera != NULL ? renderCamera->skyColor.x : 0.0f,
                         renderCamera != NULL ? renderCamera->skyColor.y : 0.0f,
                         renderCamera != NULL ? renderCamera->skyColor.z : 0.0f,
-                        1.0f},
+                        /* XR MSAA: alpha accumulates geometry coverage. */
+                        s_eyeResolve != NULL ? 0.0f : 1.0f},
         .load_op = clearColor ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD,
-        .store_op = SDL_GPU_STOREOP_STORE,
+        /* XR MSAA eyes resolve straight into the single-sampled eye image;
+         * the multisampled colour itself is never needed again. */
+        .store_op = s_eyeResolve != NULL ? SDL_GPU_STOREOP_RESOLVE
+                                         : SDL_GPU_STOREOP_STORE,
+        .resolve_texture = s_eyeResolve,
     };
     SDL_GPUDepthStencilTargetInfo depth = {
         .texture = depthTarget,
-        .clear_depth = 1.0f,
+        /* XR MSAA eyes use reversed-Z: far is 0. */
+        .clear_depth = s_eyeResolve != NULL ? 0.0f : 1.0f,
         .load_op = SDL_GPU_LOADOP_CLEAR,
-        .store_op = SDL_GPU_STOREOP_DONT_CARE,
+        /* XR eyes keep depth for the crack fill; on tiled GPUs DONT_CARE
+         * never writes it out of tile memory. */
+        .store_op = s_eye != NULL && s_eyeResolve == NULL
+                        ? SDL_GPU_STOREOP_STORE
+                        : SDL_GPU_STOREOP_DONT_CARE,
     };
     ModernNativeCameraUniform camera;
     ModernNativeCameraUniform shadowCamera;
@@ -2038,10 +2431,20 @@ static void ModernNativeGpuDrawSet(
     if (pass == NULL) return;
     ModernRayGpuBind(pass);
     SDL_PushGPUVertexUniformData(command, 0, &camera, sizeof(camera));
-    if (drawSky) {
+    /* debug.rr.sky 0 skips the sky in XR eyes (GPU cost probing). */
+    if (drawSky && (s_eye == NULL || XrDebugProp("sky", 1))) {
         ModernNativeBuildSky(renderCamera, aspect, targetHeight, &sky);
+        if (s_eye != NULL) {
+            /* Elevation-anchored cloud bands (native_sky.frag mode 2): one
+             * classic 128-line row spans 128/240 of the game's vertical
+             * field of view; the band value is 1 at the horizon. */
+            sky.gridParams[0] = renderCamera->verticalFovDegrees *
+                                0.017453292519943295f * (128.0f / 240.0f);
+            sky.gridParams[1] = 1.0f;
+            sky.gridParams[2] = 2.0f;
+        }
         SDL_PushGPUFragmentUniformData(command, 0, &sky, sizeof(sky));
-        SDL_BindGPUGraphicsPipeline(pass, s_sky);
+        SDL_BindGPUGraphicsPipeline(pass, NATIVE_PIPE(sky));
         {
             SDL_GPUTextureSamplerBinding binding = {
                 .texture = s_skyTexture,
@@ -2055,17 +2458,80 @@ static void ModernNativeGpuDrawSet(
         ? s_world->spotLightCount : 0;
     RenderViewTransform lightView = RenderPrepareView(renderCamera);
     uint32_t visibleSpots = 0;
-    for (uint32_t i = 0; i < spotCount; ++i) {
-        const SpotLight *spot = &s_world->spotLights[i];
-        if (RenderSphereInView(&lightView, aspect, spot->position, spot->range))
-            light.spots[visibleSpots++] = *spot;
+    if (s_eye != NULL) {
+        /* XR eyes look anywhere, so the forward frustum cannot cull lamps.
+         * Every lamp costs every pixel of both eyes, though, and with the
+         * whole field published that is far too much for a headset GPU:
+         * keep the [xr] max_spot_lights (default 6; each lamp costs ~0.2 ms
+         * a frame on a Quest 3) nearest the camera. */
+        static int configured = -1;
+        int maxSpots;
+        float nearest[RENDER_SPOT_LIGHT_CAPACITY];
+        const Vec3 eye = renderCamera->transform.position;
+        if (configured < 0)
+            configured = RuntimeConfigInt("xr.max_spot_lights", 6, 0,
+                                          RENDER_SPOT_LIGHT_CAPACITY);
+        maxSpots = XrDebugProp("spots", configured);
+        if (maxSpots < 0) maxSpots = 0;
+        if (maxSpots > RENDER_SPOT_LIGHT_CAPACITY)
+            maxSpots = RENDER_SPOT_LIGHT_CAPACITY;
+        for (uint32_t i = 0; i < spotCount; ++i) {
+            const SpotLight *spot = &s_world->spotLights[i];
+            float dx = spot->position.x - eye.x;
+            float dy = spot->position.y - eye.y;
+            float dz = spot->position.z - eye.z;
+            float d = dx * dx + dy * dy + dz * dz;
+            uint32_t at = visibleSpots;
+            if (visibleSpots == (uint32_t)maxSpots &&
+                (maxSpots == 0 || d >= nearest[visibleSpots - 1]))
+                continue;
+            if (visibleSpots < (uint32_t)maxSpots) visibleSpots++;
+            else at = visibleSpots - 1;
+            /* Insertion keeps the list sorted nearest first. */
+            while (at > 0 && nearest[at - 1] > d) {
+                nearest[at] = nearest[at - 1];
+                light.spots[at] = light.spots[at - 1];
+                at--;
+            }
+            nearest[at] = d;
+            light.spots[at] = *spot;
+        }
+    } else {
+        for (uint32_t i = 0; i < spotCount; ++i) {
+            const SpotLight *spot = &s_world->spotLights[i];
+            if (RenderSphereInView(&lightView, aspect, spot->position,
+                                   spot->range))
+                light.spots[visibleSpots++] = *spot;
+        }
     }
     light.spotCount[0] = (float)visibleSpots;
+    /* XR GPU probing: debug.rr.shade bitmask of shader features to skip
+     * (see native_texture.frag.glsl); never set outside the headset. */
+    light.spotCount[1] = s_eye != NULL ? (float)XrDebugProp("shade", 0) : 0.0f;
     SDL_PushGPUFragmentUniformData(command, 0, &light, sizeof(light));
 
     ModernNativeBuildShadowCamera(&s_shadowMap, &shadowCamera);
     SDL_PushGPUVertexUniformData(
         command, 1, &shadowCamera, sizeof(shadowCamera));
+    /* Draw order. XR eyes are fragment bound and the tiler only rejects a
+     * hidden fragment early (LRZ) when its occluder was drawn first, so opaque
+     * scenery can go nearest first (debug.rr.sort 1; measured no gain on a Quest 3, so off). Decals
+     * and transparent spans keep their authored order. */
+    static uint32_t order[MODERN_NATIVE_MAX_SPANS];
+    for (spanIndex = 0; spanIndex < spanCount; spanIndex++) order[spanIndex] = spanIndex;
+    if (s_eye != NULL && spans == s_spans && renderCamera != NULL &&
+        XrDebugProp("sort", 0))
+        ModernNativeSortScenery(order, spans, drawMaterials, spanCount,
+                                renderCamera->transform.position);
+    /* XR eyes are given the whole world around the player (the head can
+     * turn anywhere), and binning it cost ~0.75 ms per eye in GPU traces.
+     * Skip world-space spans whose bounds lie outside this eye's own view
+     * (debug.rr.eyecull 0 = draw everything). */
+    static uint8_t visible[MODERN_NATIVE_MAX_SPANS];
+    const int eyeCull = s_eye != NULL && spans == s_spans &&
+                        XrDebugProp("eyecull", 1);
+    if (eyeCull)
+        ModernNativeCullForEye(visible, spans, spanCount, &camera, s_eye);
     /* Opaque scenery first, its surface overlays second, opaque vehicles
      * third, then transparent materials. Vehicles therefore remain in front
      * even when a road marking or animated sign needs a meaningful offset
@@ -2076,10 +2542,16 @@ static void ModernNativeGpuDrawSet(
         int boundAllowClearcoat = -1;
         uint32_t boundEntity = UINT32_MAX;
         uint8_t boundComponent = UINT8_MAX;
-        for (spanIndex = 0; spanIndex < spanCount; spanIndex++) {
+        for (uint32_t slot = 0; slot < spanCount; slot++) {
+            spanIndex = order[slot];
             const RageNativeDrawSpan *span = &spans[spanIndex];
             const ModernNativeDrawMaterial *drawMaterial = &drawMaterials[spanIndex];
             if (drawMaterial->phase != phase) continue;
+            /* debug.rr.phases: bitmask of draw phases kept in XR eyes
+             * (1 scenery, 2 decals, 4 vehicles, 8 transparent). */
+            if (s_eye != NULL && !(XrDebugProp("phases", 15) & (1 << phase)))
+                continue;
+            if (eyeCull && !visible[spanIndex]) continue;
             ModernNativeTexture *texture = drawMaterial->texture;
             SDL_GPUGraphicsPipeline *pipeline = drawMaterial->pipeline;
             int allowClearcoat = drawMaterial->allowClearcoat;
@@ -2087,10 +2559,12 @@ static void ModernNativeGpuDrawSet(
                 SDL_GPUTextureSamplerBinding shadowBinding = {
                     .texture = s_shadowTexture,
                     .sampler = s_shadowSampler};
-                int textured = pipeline == s_texturedOpaque ||
-                    pipeline == s_texturedTransparent ||
-                    pipeline == s_texturedOpaqueDecal ||
-                    pipeline == s_texturedTransparentDecal;
+                int textured = pipeline == NATIVE_PIPE(texturedOpaque) ||
+                    pipeline == NATIVE_PIPE(texturedTransparent) ||
+                    pipeline == NATIVE_PIPE(texturedOpaqueDecal) ||
+                    pipeline == NATIVE_PIPE(texturedTransparentDecal) ||
+                    (s_msaa.texturedSolid != NULL &&
+                     pipeline == s_msaa.texturedSolid);
                 SDL_BindGPUGraphicsPipeline(pass, pipeline);
                 SDL_BindGPUFragmentSamplers(
                     pass, textured ? 1 : 0, &shadowBinding, 1);
@@ -2149,12 +2623,14 @@ static void ModernNativeGpuDrawSet(
              * input and buffer binding agrees. Never reorder transparent or
              * decal triangles, or cross a gap in the index/vertex stream. */
             uint32_t vertexCount = span->vertexCount;
-            while (batchDraws && vertexCount % 3 == 0 && spanIndex + 1 < spanCount) {
-                const RageNativeDrawSpan *next = &spans[spanIndex + 1];
-                const ModernNativeDrawMaterial *material = &drawMaterials[spanIndex + 1];
+            while (batchDraws && vertexCount % 3 == 0 && slot + 1 < spanCount) {
+                const uint32_t nextIndex = order[slot + 1];
+                const RageNativeDrawSpan *next = &spans[nextIndex];
+                const ModernNativeDrawMaterial *material = &drawMaterials[nextIndex];
                 const ModernGeometryBinding *binding = spans == s_mirrorSpans
-                    ? &s_mirrorGeometry[spanIndex + 1] : &s_mainGeometry[spanIndex + 1];
-                if (material->phase != phase || material->pipeline != pipeline ||
+                    ? &s_mirrorGeometry[nextIndex] : &s_mainGeometry[nextIndex];
+                if ((eyeCull && !visible[nextIndex]) ||
+                    material->phase != phase || material->pipeline != pipeline ||
                     (allowClearcoat && next->entity != span->entity) ||
                     (span->assetSet == RAGE_RENDER_ASSET_TRACK_MODEL_BANK_1 &&
                      span->component == 0 && next->sourceEntity != span->sourceEntity) ||
@@ -2168,13 +2644,14 @@ static void ModernNativeGpuDrawSet(
                     !RenderNativeLocalStateEqual(geometry->local ? span : NULL,
                                                 binding->local ? next : NULL)) break;
                 vertexCount += next->vertexCount;
-                ++spanIndex;
+                ++slot;
             }
             ModernNativeDrawGeometry(pass, geometry, vertexCount);
             drawCount++;
         }
     }
-    DrawLampGlows(command, pass, renderCamera, &camera);
+    if (s_eye == NULL || XrDebugProp("glow", 1))
+        DrawLampGlows(command, pass, renderCamera, &camera);
     SDL_EndGPURenderPass(pass);
     if (drawCount != 0 && RuntimeConfigEnabled("diagnostics.modern_asset_trace")) {
         fprintf(stderr,
@@ -2186,13 +2663,11 @@ static void ModernNativeGpuDrawSet(
 }
 
 
-void ModernNativeGpuDraw(SDL_GPUCommandBuffer *command,
-                         SDL_GPUTexture *colorTarget,
-                         SDL_GPUTexture *depthTarget,
-                         int clearColor, int drawSky, int targetHeight) {
-    if (s_world == NULL || !s_world->hasCamera) return;
+/* Uploads this frame's vertices and draws the shadow map: work shared by
+ * every view of the main pass. Returns 0 if the frame cannot be drawn. */
+static int ModernNativeGpuPrepareMainPass(SDL_GPUCommandBuffer *command) {
     if (ModernNativeGpuHasDraws()) {
-        if (!ModernNativeUploadVertices(command)) return;
+        if (!ModernNativeUploadVertices(command)) return 0;
         if (s_rayMode) {
             for (uint32_t span = 0; span < s_spanCount; ++span)
                 (void)ModernNativeLoadTexture(command, &s_spans[span]);
@@ -2219,10 +2694,43 @@ void ModernNativeGpuDraw(SDL_GPUCommandBuffer *command,
         if ((s_rayMode & 1) == 0 || ModernRayGpuNodeCount() == 0)
             ModernNativeDrawShadowMap(command);
     }
+    return 1;
+}
+
+void ModernNativeGpuDraw(SDL_GPUCommandBuffer *command,
+                         SDL_GPUTexture *colorTarget,
+                         SDL_GPUTexture *depthTarget,
+                         int clearColor, int drawSky, int targetHeight) {
+    if (s_world == NULL || !s_world->hasCamera) return;
+    if (!ModernNativeGpuPrepareMainPass(command)) return;
     ModernNativeGpuDrawSet(command, colorTarget, depthTarget, clearColor,
                            drawSky,
                            &s_world->camera, s_aspect, s_spans, s_spanCount,
                            s_vertexCount, "main", targetHeight);
+    ModernNativeWarmTrackBank(command);
+}
+
+void ModernNativeGpuDrawStereo(SDL_GPUCommandBuffer *command,
+                               SDL_GPUTexture *const colorTargets[2],
+                               SDL_GPUTexture *const depthTargets[2],
+                               SDL_GPUTexture *const resolveTargets[2],
+                               const ModernNativeEyeView eyes[2],
+                               float worldScale, int targetHeight) {
+    int eye;
+    if (s_world == NULL || !s_world->hasCamera) return;
+    if (!ModernNativeGpuPrepareMainPass(command)) return;
+    s_eyeWorldScale = worldScale;
+    for (eye = 0; eye < 2; eye++) {
+        s_eye = &eyes[eye];
+        s_eyeResolve = resolveTargets != NULL && s_msaaState > 0
+                           ? resolveTargets[eye] : NULL;
+        ModernNativeGpuDrawSet(command, colorTargets[eye], depthTargets[eye],
+                               1, 1, &s_world->camera, s_aspect, s_spans,
+                               s_spanCount, s_vertexCount, "main",
+                               targetHeight);
+    }
+    s_eye = NULL;
+    s_eyeResolve = NULL;
     ModernNativeWarmTrackBank(command);
 }
 
@@ -2241,6 +2749,7 @@ void ModernNativeGpuShutdown(void) {
     ModernNativeGpuClearTextures();
     ModernNativeReleaseSkyTexture();
     ModernNativeReleaseGeometry();
+    ModernNativeReleaseMsaaPipelines();
     if (s_device != NULL) {
         if (s_texturedOpaque != NULL)
             SDL_ReleaseGPUGraphicsPipeline(s_device, s_texturedOpaque);

@@ -62,9 +62,16 @@ void main() {
     float worldBias = inDepthBias * 0.25;
     float boundedBias = -camera.projection.w * worldBias /
                         max(viewDepth + worldBias, 1.0);
-    clipDepth += sign(legacyBias) * min(abs(legacyBias), abs(boundedBias));
-    gl_Position = vec4(view.x * camera.projection.x,
-                       view.y * camera.projection.y,
+    // Reversed-Z cameras (XR eyes; negative depth scale) bring a surface
+    // closer by raising depth, so the bias direction flips with them.
+    clipDepth += sign(camera.projection.z) * sign(legacyBias) *
+                 min(abs(legacyBias), abs(boundedBias));
+    // viewRow0.w / viewRow1.w carry an off-axis (asymmetric) projection
+    // centre for XR eyes; they are zero for the ordinary symmetric camera.
+    gl_Position = vec4(view.x * camera.projection.x +
+                           viewDepth * camera.viewRow0.w,
+                       view.y * camera.projection.y +
+                           viewDepth * camera.viewRow1.w,
                        clipDepth,
                        viewDepth);
     uv = inUV + vec2(instance.properties.z, 0.0);
@@ -75,7 +82,12 @@ void main() {
         fog = worldFog;
     } else {
         // Keep fog tied to the original position, not camera-facing decal lift.
-        float fogDepth = -dot(camera.viewRow2.xyz, worldFog.xyz - camera.position.xyz);
+        // XR eyes set position.w: the view axis turns with the head there,
+        // so fog is measured by distance and stays put as the player looks
+        // around. Zero for the ordinary camera.
+        float fogDepth = camera.position.w > 0.5
+            ? length(worldFog.xyz - camera.position.xyz)
+            : -dot(camera.viewRow2.xyz, worldFog.xyz - camera.position.xyz);
         float fogWeight = 0.0;
         if (worldFog.w > 0.0 && camera.fogRange.x > 0.0 &&
             !isnan(fogDepth) && !isinf(fogDepth)) {

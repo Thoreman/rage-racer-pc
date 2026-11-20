@@ -74,6 +74,15 @@ void main() {
     determinant = validGrid != 0.0 ? determinant : 1.0;
     float cloudBand = (columnAxis.x * relative.y -
                        columnAxis.y * relative.x) / determinant;
+    /* XR eyes (gridParams.z == 2) have no shared screen to anchor the classic
+     * grid to; place the bands by elevation instead so the sheet stays fixed
+     * to the world as the head turns. gridParams.x is one row's angular
+     * height and gridParams.y the band value at the horizon. */
+    if (sky.gridParams.z == 2.0) {
+        cloudBand = sky.gridParams.y -
+                    asin(clamp(height, -1.0, 1.0)) / sky.gridParams.x;
+        validGrid = 1.0;
+    }
     float panoramaHeight = float(textureSize(panorama, 0).y);
     float panoramaV = fract(cloudBand);
     if (panoramaHeight > 128.0) {
@@ -111,6 +120,11 @@ void main() {
      * renderer hides this part of the sheet with its ground skirt; the native
      * renderer must apply the equivalent mask before drawing real geometry. */
     cloudCoverage *= step(0.0, height) * validGrid;
+    /* XR: the sheet is wrapped round the horizon, so its columns converge on
+     * a point overhead that a flat screen never shows. Fade it into the
+     * gradient well before that. */
+    if (sky.gridParams.z == 2.0)
+        cloudCoverage *= 1.0 - smoothstep(0.50, 0.80, height);
     color = mix(color, authored.rgb,
                 authored.a * sky.bottom.a * cloudCoverage);
     outColor = vec4(color, 1.0);

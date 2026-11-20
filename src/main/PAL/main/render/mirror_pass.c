@@ -20,7 +20,9 @@ static s32 MirrorPassIsAvailable(void) {
     return g_MirrorUnlocked != 0 &&
            g_RenderState.mirror.enabled != 0 &&
            g_Camera.mode == CAMERA_VIEW_CAR &&
-           g_GrandPrixMode != 0 &&
+           /* Port: a custom race has rivals behind the player too. */
+           (g_GrandPrixMode != 0 ||
+            g_RaceSession.kind == RACE_SESSION_CUSTOM) &&
            g_RacePhase == RACE_PHASE_ACTIVE;
 }
 

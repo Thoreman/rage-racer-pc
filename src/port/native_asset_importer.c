@@ -2,6 +2,7 @@
 #include "native_asset_importer.h"
 #include "native_mesh_writer.h"
 #include "native_import_stream.h"
+#include "runtime_config.h"
 #include "track_material_page.h"
 #include "track_texture_snapshot.h"
 #include "sky_panorama_layout.h"
@@ -11,6 +12,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -257,6 +259,134 @@ static int ImportScanFace(uint32_t mesh, const RageImportedFace *face,
 }
 
 
+typedef struct RageImportedQuadCollect {
+    RageImportedQuad *quads;
+    float (*uvs)[4][2];
+    uint32_t *meshes;
+    uint32_t count;
+    uint32_t limit;
+} RageImportedQuadCollect;
+
+/* Same corner transform as ImportWriteFace, so fixes apply 1:1. */
+static int ImportCollectQuad(uint32_t mesh, const RageImportedFace *face,
+                             void *context) {
+    RageImportedQuadCollect *collect = context;
+    uint32_t corner;
+    if (collect->count >= collect->limit) return 0;
+    collect->meshes[collect->count] = mesh;
+    for (corner = 0; corner < 4; corner++) {
+        const SVec *position = &face->vertices[face->vertex[corner]];
+        collect->quads[collect->count][corner][0] = (float)position->vx;
+        collect->quads[collect->count][corner][1] = (float)-position->vy;
+        collect->quads[collect->count][corner][2] = (float)-position->vz;
+        collect->uvs[collect->count][corner][0] = (float)face->uv[corner][0];
+        collect->uvs[collect->count][corner][1] = (float)face->uv[corner][1];
+    }
+    collect->count++;
+    return 1;
+}
+
+/* Geometry fixes for terrain that the PS1 hid with ordering-table sorting
+ * but that show in true depth and stereo. Optional: on any failure the
+ * terrain imports unchanged. Returns extra output faces (draped pieces). */
+typedef struct RageTerrainFixes {
+    float (*offsets)[3];
+    RageImportedDrape *drapes;
+    RageImportedPiece *pieces;
+    uint32_t count;
+    uint32_t pieceCount;
+} RageTerrainFixes;
+
+static void ImportFreeTerrainFixes(RageTerrainFixes *fixes) {
+    free(fixes->offsets);
+    free(fixes->drapes);
+    free(fixes->pieces);
+    memset(fixes, 0, sizeof(*fixes));
+}
+
+static uint32_t ImportPrepareTerrainFixes(const RenderMeshInstance *instance,
+                                          uint32_t faceCount,
+                                          RageTerrainFixes *fixes) {
+    RageImportedQuadCollect collect;
+    uint32_t ignored, moved = 0, draped = 0, extra = 0, face;
+    memset(fixes, 0, sizeof(*fixes));
+    memset(&collect, 0, sizeof(collect));
+    collect.quads = malloc(sizeof(*collect.quads) * faceCount);
+    collect.uvs = malloc(sizeof(*collect.uvs) * faceCount);
+    collect.meshes = malloc(sizeof(*collect.meshes) * faceCount);
+    collect.limit = faceCount;
+    fixes->offsets = malloc(sizeof(*fixes->offsets) * faceCount);
+    fixes->drapes = malloc(sizeof(*fixes->drapes) * faceCount);
+    if (collect.quads != NULL && collect.uvs != NULL &&
+        collect.meshes != NULL && fixes->offsets != NULL &&
+        fixes->drapes != NULL &&
+        ImportVisit(instance, ImportCollectQuad, &collect, &ignored) &&
+        collect.count == faceCount) {
+        /* Terrain cells are in GTE units, four per world unit. */
+        moved = ImportResolveSignPenetration(
+            (const RageImportedQuad *)collect.quads, collect.meshes,
+            collect.count, 4.0f, fixes->offsets);
+        if (!RuntimeConfigEnabled("xr.flat_road_paint")) {
+            /* Where each cell sits (GTE units), so paint at a cell edge can
+             * find its road in the neighbouring cell. A cell placed twice or
+             * not at all keeps to its own faces. */
+            float (*origins)[2] = malloc(sizeof(*origins) * faceCount);
+            float (*meshOrigin)[2] = malloc(sizeof(*meshOrigin) * 1024u);
+            if (origins != NULL && meshOrigin != NULL &&
+                g_TerrainCellGrid != NULL) {
+                uint32_t g;
+                for (g = 0; g < 1024u; g++)
+                    meshOrigin[g][0] = meshOrigin[g][1] = NAN;
+                for (g = 0; g < 1024u; g++) {
+                    uint32_t mesh = g_TerrainCellGrid[g] & 0x3FFu;
+                    float x = (float)(((g & 31u) * 2048u + 1024u) * 4u);
+                    float z = -(float)(((31u - (g >> 5)) * 2048u + 1024u) * 4u);
+                    if (mesh == 0x3FFu) continue;
+                    if (isnan(meshOrigin[mesh][0])) {
+                        meshOrigin[mesh][0] = x;
+                        meshOrigin[mesh][1] = z;
+                    } else if (meshOrigin[mesh][0] != x || meshOrigin[mesh][1] != z) {
+                        meshOrigin[mesh][1] = INFINITY; /* placed twice */
+                    }
+                }
+                for (face = 0; face < faceCount; face++) {
+                    const float *o = meshOrigin[collect.meshes[face] & 0x3FFu];
+                    origins[face][0] = isinf(o[1]) ? NAN : o[0];
+                    origins[face][1] = isinf(o[1]) ? NAN : o[1];
+                }
+            } else {
+                free(origins);
+                origins = NULL;
+            }
+            free(meshOrigin);
+            draped = ImportDrapeRoadMarkings(
+                (const RageImportedQuad *)collect.quads,
+                (const float (*)[4][2])collect.uvs, collect.meshes,
+                (const float (*)[2])origins, collect.count, 4.0f,
+                2048.0f * 4.0f, fixes->drapes, &fixes->pieces);
+            free(origins);
+        }
+    }
+    free(collect.quads);
+    free(collect.uvs);
+    free(collect.meshes);
+    if (moved == 0) {
+        free(fixes->offsets);
+        fixes->offsets = NULL;
+    }
+    if (draped == 0) {
+        free(fixes->drapes);
+        fixes->drapes = NULL;
+    } else {
+        for (face = 0; face < faceCount; face++)
+            if (fixes->drapes[face].count > 1)
+                extra += fixes->drapes[face].count - 1;
+    }
+    fixes->count = faceCount;
+    fixes->pieceCount = draped;
+    return extra;
+}
+
 static RageImportedMeshEntry *ImportFindEntry(
     uint32_t assetKey, RenderAssetSet assetSet) {
     uint32_t index;
@@ -278,29 +408,46 @@ static RageImportedMeshEntry *ImportBuildMesh(
     RageImportedScan scan;
     RageImportedWrite write;
     RageImportedMeshEntry *entry;
-    uint32_t meshCount;
+    RageTerrainFixes fixes;
+    uint32_t meshCount, outputFaces;
     RageRuntimeMeshLayout layout;
     uint8_t *bytes;
+    memset(&fixes, 0, sizeof(fixes));
     if (s_entryCount == RAGE_IMPORT_ENTRY_LIMIT) return NULL;
     materials = calloc(RAGE_IMPORT_MATERIAL_LIMIT, sizeof(*materials));
     if (materials == NULL) return NULL;
     memset(&scan, 0, sizeof(scan));
     scan.materials = materials;
     if (!ImportVisit(instance, ImportScanFace, &scan, &meshCount) ||
-        scan.faceCount == 0 || scan.faceCount > UINT32_MAX / 6u ||
-        !RuntimeMeshLayout(meshCount, (uint32_t)scan.faceCount * 4u,
-                           (uint32_t)scan.faceCount * 6u, &layout)) {
+        scan.faceCount == 0 || scan.faceCount > UINT32_MAX / 12u) {
+        free(materials);
+        return NULL;
+    }
+    outputFaces = (uint32_t)scan.faceCount;
+    if (instance->assetSet == RAGE_RENDER_ASSET_TERRAIN) {
+        uint32_t extra = ImportPrepareTerrainFixes(
+            instance, (uint32_t)scan.faceCount, &fixes);
+        if (extra > UINT32_MAX / 12u - outputFaces) {
+            ImportFreeTerrainFixes(&fixes);
+            extra = 0;
+        }
+        outputFaces += extra;
+    }
+    if (!RuntimeMeshLayout(meshCount, outputFaces * 4u, outputFaces * 6u,
+                           &layout)) {
+        ImportFreeTerrainFixes(&fixes);
         free(materials);
         return NULL;
     }
     bytes = calloc(1, layout.totalSize);
     if (bytes == NULL) {
+        ImportFreeTerrainFixes(&fixes);
         free(materials);
         return NULL;
     }
     if (!RuntimeMeshEncodeHeader(bytes, layout.totalSize, meshCount,
-                                (uint32_t)scan.faceCount * 4u,
-                                (uint32_t)scan.faceCount * 6u)) {
+                                outputFaces * 4u, outputFaces * 6u)) {
+        ImportFreeTerrainFixes(&fixes);
         free(bytes);
         free(materials);
         return NULL;
@@ -317,15 +464,26 @@ static RageImportedMeshEntry *ImportBuildMesh(
     write.vertexCursor = bytes + layout.verticesOffset;
     write.indexCursor = bytes + layout.indicesOffset;
     write.meshLimit = meshCount;
-    write.vertexLimit = (uint32_t)scan.faceCount * 4u;
-    write.indexLimit = (uint32_t)scan.faceCount * 6u;
+    write.vertexLimit = outputFaces * 4u;
+    write.indexLimit = outputFaces * 6u;
+    if (fixes.offsets != NULL) {
+        write.faceOffsets = (const float (*)[3])fixes.offsets;
+        write.faceOffsetCount = fixes.count;
+    }
+    if (fixes.drapes != NULL) {
+        write.drapes = fixes.drapes;
+        write.pieces = fixes.pieces;
+        write.drapeCount = fixes.count;
+    }
     if (!ImportVisit(instance, ImportWriteFace, &write, &meshCount) ||
         !ImportWriteFinish(&write, meshCount)) {
+        ImportFreeTerrainFixes(&fixes);
         free(bytes);
         free(entry->materials);
         memset(entry, 0, sizeof(*entry));
         return NULL;
     }
+    ImportFreeTerrainFixes(&fixes);
     if (!RuntimeCachedMeshAdopt(&entry->cached, bytes, layout.totalSize,
                                 ImportReleaseMeshBytes, NULL)) {
         free(bytes);
@@ -335,6 +493,7 @@ static RageImportedMeshEntry *ImportBuildMesh(
     }
     return entry;
 }
+
 
 /*
  * One snapshot of video memory, shared by every material decoded from it.
