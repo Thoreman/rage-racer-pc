@@ -1,0 +1,60 @@
+name: Rage Racer VR bug report
+description: Report a problem with the Meta Quest VR port
+labels: ["bug", "vr"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This tracker is for the Meta Quest VR port only.**
+        Bugs that also happen in the flat PC version belong upstream at
+        [khasinski/rage-racer-pc](https://github.com/khasinski/rage-racer-pc/issues).
+        Please don't ask for or share game disc images. You need your own copy of the game.
+  - type: dropdown
+    id: headset
+    attributes:
+      label: Headset
+      options:
+        - Quest 3
+        - Quest 3S
+        - Quest 2
+        - Quest Pro
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: APK version
+      description: For example 0.6.0-beta. It's in the APK filename or the app info screen.
+    validations:
+      required: true
+  - type: dropdown
+    id: region
+    attributes:
+      label: Disc region
+      options:
+        - USA (NTSC-U)
+        - Europe (PAL)
+        - Japan (NTSC-J)
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you expected, what you saw instead, and which course or menu you were on.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start a Custom Race on ...
+        2. ...
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots, video or logs
+      description: Optional. Drag files here. An `adb logcat` capture helps with crashes.
