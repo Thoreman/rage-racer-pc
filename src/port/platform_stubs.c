@@ -130,18 +130,42 @@ static void PortLogGameSpeed(void) {
     }
 }
 
-/* Race game speed in percent, 50 to 100 in steps of 10 (Quest only; the PC
- * build always runs at 100). Races run at that fraction of the console's
- * speed; menus, movies and their sound stay at full speed. The default is
- * [xr] game_speed (a fraction; 0.6 on Quest if unset); the pause menu's SPEED row
- * changes it and it is remembered in the user config file "game-speed". */
+/* Race speed in percent, 50 to 150 in steps of 10 (Quest only; the PC build
+ * always runs at console speed). 100% is the speed at which the car crosses
+ * the VR world (sized by [xr] world_scale) as fast as its speedometer says;
+ * see VrRealSpeedFraction. Menus, movies and their sound stay at full speed.
+ * The default is [xr] race_speed (percent, 100 if unset); the pause menu's
+ * SPEED row changes it and it is remembered in the user config file
+ * "race-speed". The old "game-speed" file and [xr] game_speed were fractions
+ * of console speed and are ignored. */
 enum {
     GAME_SPEED_MIN = 50,
-    GAME_SPEED_MAX = 100,
+    GAME_SPEED_MAX = 150,
     GAME_SPEED_STEP = 10,
-    GAME_SPEED_DEFAULT_XR = 60,
+    GAME_SPEED_DEFAULT_XR = 100,
 };
 static int s_gameSpeedPercent = -1;
+
+#ifdef __ANDROID__
+/* Fraction of console speed at which the speedometer is true in VR.
+ * Measured on the PC build (accelerator held, straight road): the player
+ * moves 0.075 world units per logic tick per unit of internal speed (rivals
+ * use the same 16 * 6 / 1280), and the speedometer shows internal speed *
+ * 160 / 1168 km/h. At console speed that is 59 units per metre on NTSC
+ * timing (30 ticks/s) and 49 on PAL (25), while VR draws world_scale (25)
+ * units per metre, so console speed looks about twice as fast as the
+ * speedometer. Slowing logic by this fraction (0.42 NTSC, 0.51 PAL) makes
+ * 100% match it. */
+static double VrRealSpeedFraction(void) {
+    const double unitsPerTickPerSpeed = 16.0 * 6.0 / 1280.0;
+    const double metresPerSecondPerSpeed = 160.0 / 1168.0 / 3.6;
+    double ticksPerSecond = TimingBaseHz() / 2.0;
+    double worldScale =
+        (double)RuntimeConfigInt("xr.world_scale", 25, 1, 100000);
+    return worldScale * metresPerSecondPerSpeed /
+           (unitsPerTickPerSpeed * ticksPerSecond);
+}
+#endif
 
 static int ClampGameSpeed(int percent) {
     percent = (percent + GAME_SPEED_STEP / 2) / GAME_SPEED_STEP *
@@ -160,19 +184,18 @@ static void LoadGameSpeed(void) {
     if (s_gameSpeedPercent >= 0) return;
     s_gameSpeedPercent = GAME_SPEED_MAX;
 #ifdef __ANDROID__
-    /* Console speed feels much faster in VR than on a TV (life-size scenery,
-     * no frame); 60% was the comfortable default in play-testing. */
     s_gameSpeedPercent = GAME_SPEED_DEFAULT_XR;
-    value = RuntimeConfigGet("xr.game_speed");
+    value = RuntimeConfigGet("xr.race_speed");
     if (value != NULL)
-        s_gameSpeedPercent = ClampGameSpeed((int)(strtod(value, NULL) * 100.0 + 0.5));
-    if (PlatformUserConfigPath("game-speed", path, sizeof(path)) &&
+        s_gameSpeedPercent = ClampGameSpeed(atoi(value));
+    if (PlatformUserConfigPath("race-speed", path, sizeof(path)) &&
         (file = fopen(path, "r")) != NULL) {
         if (fscanf(file, "%d", &saved) == 1)
             s_gameSpeedPercent = ClampGameSpeed(saved);
         fclose(file);
     }
-    fprintf(stderr, "rage-port: race game speed %d%%\n", s_gameSpeedPercent);
+    fprintf(stderr, "rage-port: race speed %d%% (100%% = %.3f of console)\n",
+            s_gameSpeedPercent, VrRealSpeedFraction());
 #else
     (void)path; (void)file; (void)value; (void)saved;
 #endif
@@ -185,7 +208,7 @@ static void SaveGameSpeed(void) {
 
     if (!PlatformUserConfigDirectory(directory, sizeof(directory)) ||
         !PlatformEnsureDirectory(directory) ||
-        !PlatformUserConfigPath("game-speed", path, sizeof(path)))
+        !PlatformUserConfigPath("race-speed", path, sizeof(path)))
         return;
     file = fopen(path, "w");
     if (file == NULL) return;
@@ -229,7 +252,9 @@ void PortGameSpeedLabel(char *text, size_t size) {
 static void PortApplyGameSpeed(void) {
     LoadGameSpeed();
     Psyz_VideoSetGameSpeed(g_SceneId == GAME_SCENE_RACE
-                               ? s_gameSpeedPercent / 100.0 : 1.0);
+                               ? s_gameSpeedPercent / 100.0 *
+                                     VrRealSpeedFraction()
+                               : 1.0);
     /* XR frames come from the wait between ticks; one more at the end of a
      * tick lands before the next tick's logic and judders. debug.rr.tickskip
      * 0 restores it. */

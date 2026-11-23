@@ -75,7 +75,7 @@ and `-DCRACK_DEBUG` (crack fill). **MSL headers were not regenerated** — run
 | `msaa` | false | MSAA on eyes (off by default: ~40% of the GPU in heavy views) |
 | `msaa_samples` | 2 | 2 or 4 samples per pixel (4 costs ~10-15% more GPU) |
 | `max_spot_lights` | 6 | nearest car lamps lighting the scene (~0.2 ms each) |
-| `game_speed` | 0.6 | race speed vs the console (pause menu SPEED row, saved in game-speed) |
+| `race_speed` | 100 | race speed percent, 50-150; 100 = speedometer true at `world_scale` (0.42x console on NTSC, 0.51x PAL; pause menu SPEED row, saved in race-speed) |
 | `catchup` | true | logic keeps console time while frames are slow (psyz absolute VBlank pacing) |
 | `hud` | true | floating HUD panel in the in-car view |
 | `hud_width` / `hud_distance` / `hud_drop` | 2.2 / 1.3 / 0.0 | HUD panel metres (gauges must sit ~40° out) |

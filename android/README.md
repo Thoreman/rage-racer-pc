@@ -58,10 +58,11 @@ Notes:
   and at the end of a race, because the pause menu is drawn on it.
 - The last row of the pause menu switches controller vibration on or off.
   The setting is remembered.
-- The row above it, **SPEED**, sets how fast races run: 50% to 100% of the
-  original console's speed (left/right, or press to step). It starts at 60%:
-  full speed feels a great deal faster in VR than on a TV. Menus and movies
-  always run at normal speed. The setting is remembered.
+- The row above it, **SPEED**, sets how fast races run, from 50% to 150%
+  (left/right, or press to step). At 100% the car passes the scenery as fast
+  as the speedometer says: the console's own pace looks about twice that in
+  life-size VR. Menus and movies always run at normal speed. The setting is
+  remembered.
 - The rear-view mirror appears in the in-car view in Grand Prix and Custom
   Race.
 - **Custom Race** on the title menu offers every course, class and car

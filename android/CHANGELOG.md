@@ -25,8 +25,8 @@ The first build meant for other people. Tested on a Quest 3 only.
 - Controller vibration for collisions, slides and road surface, with an
   on/off switch on the pause menu.
 - The pause menu lists the controls.
-- Race speed setting on the pause menu, 50-100% of console speed, 60% by
-  default for comfort in VR. The game keeps exact console timing even when
+- Race speed setting on the pause menu, 50-150%. 100% (the default) is
+  calibrated so the speedometer matches what you see in VR. The game keeps exact console timing even when
   the headset drops frames.
 
 **Picture**
