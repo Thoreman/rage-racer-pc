@@ -1,4 +1,5 @@
 #include "game/menu.h"
+#include "game/menu_internal.h"
 #include "game/prim.h"
 #include "game/render_internal.h"
 
@@ -27,6 +28,8 @@ u8 *QueueDrawModePrim(GameOrderingTableEntry *ot, u8 *prim, s32 tpage) {
 }
 
 void DrawOptionRootMenu(void) { s_rootDraws++; }
+static s32 s_graphicsEnters;
+void EnterGraphicsOptionMenu(void) { s_graphicsEnters++; }
 
 #define CHECK(condition)                                                       \
     do {                                                                       \
@@ -111,8 +114,44 @@ static int TestFadeStateTransitions(void) {
     return 0;
 }
 
+static int TestGraphicsRequest(void) {
+    Reset();
+    s_graphicsEnters = 0;
+    OptionRequestGraphicsPage();
+    g_GameMode = OPTION_MODE_FADE;
+    g_FadeLevel = 0x20;
+    g_FadeStep = -8;
+    UpdateOptionMenuFade();
+    CHECK(g_GameMode == OPTION_MODE_FADE && s_graphicsEnters == 0);
+    CHECK(s_rootDraws == 0);
+    g_FadeLevel = 0;
+    UpdateOptionMenuFade();
+    CHECK(g_GameMode == OPTION_MODE_GRAPHICS && s_graphicsEnters == 1);
+    CHECK(g_FadeStep == 0);
+
+    /* Leaving the page fades out without the root menu showing. */
+    StartOptionMenuExit(GAME_SCENE_ENTER_FRONTEND);
+    UpdateOptionMenuFade();
+    CHECK(s_rootDraws == 0);
+    g_FadeLevel = 0x100;
+    UpdateOptionMenuFade();
+    CHECK(g_SceneId == GAME_SCENE_ENTER_FRONTEND);
+
+    /* The request is consumed: the next entry opens the root menu. */
+    Reset();
+    s_graphicsEnters = 0;
+    g_GameMode = OPTION_MODE_FADE;
+    g_FadeLevel = INT_MIN;
+    g_FadeStep = -8;
+    UpdateOptionMenuFade();
+    CHECK(g_GameMode == OPTION_MODE_ROOT && s_graphicsEnters == 0);
+    CHECK(s_rootDraws == 1);
+    return 0;
+}
+
 int main(void) {
     CHECK(TestFadeTileClamping() == 0);
+    CHECK(TestGraphicsRequest() == 0);
     CHECK(TestFadeStateTransitions() == 0);
     puts("option menu fade tests passed");
     return 0;

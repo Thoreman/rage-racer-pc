@@ -11,6 +11,10 @@
 #include <stdio.h>
 
 static Frontend s_frontend;
+static s32 s_xrAvailable;
+static s32 s_graphicsRequests;
+int PortXrAvailable(void) { return (int)s_xrAvailable; }
+void OptionRequestGraphicsPage(void) { s_graphicsRequests++; }
 
 static OptionMenu s_optionMenu;
 
@@ -105,6 +109,8 @@ static void ResetState(s32 selection) {
     s_assetComplete = 0;
     s_courseRequests = 0;
     s_optionRequests = 0;
+    s_graphicsRequests = 0;
+    s_xrAvailable = 0;
     s_resetCalls = 0;
     s_saveRequests = 0;
     s_selectBgmRequests = 0;
@@ -171,6 +177,15 @@ int main(void) {
     UpdateMainMenuInput();
     CHECK(s_optionRequests == 1 && s_optionMenu.cursor == 0);
 
+    CHECK(s_graphicsRequests == 0);
+
+    ResetState(TITLE_MENU_GRAPHICS);
+    s_xrAvailable = 1;
+    UpdateMainMenuInput();
+    CHECK(s_frontend.state == FRONTEND_STATE_MENU_EXIT);
+    CHECK(s_optionRequests == 1 && s_optionMenu.cursor == 0);
+    CHECK(s_graphicsRequests == 1);
+
     ResetState(TITLE_MENU_OPTIONS);
     s_assetComplete = 1;
     UpdateMainMenuInput();
@@ -196,7 +211,7 @@ int main(void) {
     s_frontend.menuSlide = 0x38;
     s_frontend.pulse = 0;
     DrawMainMenuRows();
-    CHECK(s_labelCount == TITLE_MENU_ITEM_COUNT);
+    CHECK(s_labelCount == 6);
     CHECK(s_labelItem[0] == TITLE_MENU_GRAND_PRIX);
     CHECK(s_labelItem[1] == TITLE_MENU_EXTRA_GRAND_PRIX);
     CHECK(s_labelItem[2] == TITLE_MENU_TIME_ATTACK);
@@ -207,6 +222,34 @@ int main(void) {
     CHECK(s_labelY[2] == 0x94 && s_labelY[3] == 0xAC);
     CHECK(s_labelY[4] == 0xC4 && s_labelY[5] == 0xDC);
     CHECK(s_labelHeight[3] == 0x10 && s_labelSelected[3] == 1);
+
+    /* The VR build lists GRAPHICS as a seventh row under OPTION. */
+    ResetState(TITLE_MENU_GRAPHICS);
+    g_PadPressed = 0;
+    s_xrAvailable = 1;
+    g_ExtraGrandPrixUnlocked = 1;
+    s_frontend.menuSlide = 0x40;
+    DrawMainMenuRows();
+    CHECK(s_labelCount == TITLE_MENU_ITEM_COUNT);
+    CHECK(s_labelItem[6] == TITLE_MENU_GRAPHICS);
+    CHECK(s_labelY[0] == 0x5A && s_labelY[1] == 0x6E && s_labelY[6] == 0xD2);
+    /* The last bar (16 lines) stays inside the 240-line area with margin. */
+    CHECK(s_labelY[6] + 16 <= 240 - 8);
+
+    /* Extra GP locked: six rows compact, GRAPHICS is the sixth. */
+    g_ExtraGrandPrixUnlocked = 0;
+    s_labelCount = 0;
+    DrawMainMenuRows();
+    CHECK(s_labelCount == 6);
+    CHECK(s_labelItem[1] == TITLE_MENU_TIME_ATTACK && s_labelY[1] == 0x6E);
+    CHECK(s_labelItem[5] == TITLE_MENU_GRAPHICS && s_labelY[5] == 0xBE);
+    CHECK(s_labelY[5] + 16 <= 240 - 8);
+    g_ExtraGrandPrixUnlocked = 1;
+
+    s_frontend.state = FRONTEND_STATE_MENU_OPENING;
+    s_frontend.menuSlide = INT_MAX;
+    UpdateMainMenuOpen();
+    CHECK(s_frontend.menuSlide == 0x40);
 
     puts("main menu state tests passed");
     return 0;

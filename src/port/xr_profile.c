@@ -1,6 +1,8 @@
 #include "xr_profile.h"
 
 #include "runtime_config.h"
+#include "graphics_settings.h"
+#include "platform_paths.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -61,7 +63,7 @@ static const XrProfile *Resolve(void) {
 
 const char *XrProfileName(void) { return Resolve()->name; }
 
-const char *XrProfileSetting(const char *key) {
+const char *XrProfileBaseSetting(const char *key) {
     const char *value = RuntimeConfigGet(key);
     const XrProfile *profile;
 
@@ -73,10 +75,42 @@ const char *XrProfileSetting(const char *key) {
     return NULL;
 }
 
+static int s_graphicsReady;
+
+/* The graphics layer's base: ini, then the profile table, except msaa, which
+ * the default preset owns (ini -> default preset -> profile). */
+static const char *GraphicsBase(const char *key) {
+    if (key != NULL && strcmp(key, "xr.msaa") == 0) return RuntimeConfigGet(key);
+    return XrProfileBaseSetting(key);
+}
+
+const char *XrProfileSetting(const char *key) {
+    const char *value = s_graphicsReady && key != NULL ? GraphicsSettingGet(key) : NULL;
+
+    return value != NULL ? value : XrProfileBaseSetting(key);
+}
+
+void XrProfileGraphicsStart(void) {
+    char path[4096];
+
+    GraphicsSettingsInit(GraphicsBase, XrProfileName());
+    s_graphicsReady = 1;
+    if (PlatformUserConfigPath("graphics", path, sizeof(path)))
+        GraphicsSettingsLoad(path);
+}
+
 int XrProfileEnabled(const char *key) {
     const char *value = XrProfileSetting(key);
 
     if (value == NULL) return 1;
     return !(strcmp(value, "false") == 0 || strcmp(value, "0") == 0 ||
              strcmp(value, "off") == 0 || strcmp(value, "no") == 0);
+}
+
+int PortXrAvailable(void) {
+#if defined(__ANDROID__) || defined(RAGE_PC_XR)
+    return 1;
+#else
+    return 0;
+#endif
 }

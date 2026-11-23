@@ -24,8 +24,18 @@ typedef enum TitleMenuItem {
     TITLE_MENU_CUSTOM,
     TITLE_MENU_LOAD_SAVE,
     TITLE_MENU_OPTIONS,
+    /* VR build only: opens the graphics page; hidden unless PortXrAvailable(). */
+    TITLE_MENU_GRAPHICS,
     TITLE_MENU_ITEM_COUNT,
 } TitleMenuItem;
+
+/* Rows shown on the title menu: all of them on the VR build, one fewer on
+ * the flat game. */
+s32 TitleMenuVisibleCount(void);
+
+/* One-shot: the next time the title menu opens, start on `item` instead of
+ * GRAND PRIX (used when the graphics page returns to the title). */
+void SetTitleMenuReturnSelection(TitleMenuItem item);
 
 TitleMenuItem MoveTitleMenuSelection(s32 selection, s32 direction,
                                      int extraGrandPrixUnlocked);

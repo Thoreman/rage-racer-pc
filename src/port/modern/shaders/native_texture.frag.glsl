@@ -102,12 +102,10 @@ vec3 reflectedSky(vec3 direction) {
 }
 
 #ifdef XR_SUPERSAMPLE
-/* Taps per axis at most. 4 (16 reads) cost a Quest 3 most of its frame at
- * 120 Hz: GPU traces showed ~12 ms per eye. 2 keeps most of the moire fix
- * for a quarter of the reads. */
-#ifndef XR_SUPERSAMPLE_MAX_TAPS
-#define XR_SUPERSAMPLE_MAX_TAPS 2.0
-#endif
+/* Taps per axis at most: sceneLight.spotCount.z, the VR graphics menu's
+ * TEXTURE DETAIL (STANDARD 2, HIGH 4), never below 2. 4 (16 reads) cost a
+ * Quest 3 most of its frame at 120 Hz: GPU traces showed ~12 ms per eye.
+ * 2 keeps most of the moire fix for a quarter of the reads. */
 /* XR: the atlas-safe mip chain stops at 1/8 size, so far surfaces with fine
  * repeating detail (grandstand rows, chequered lines) are under-sampled and
  * alias into moving moire bars. Past the last mip, average a grid of taps
@@ -124,7 +122,7 @@ vec4 SampleMaterial(vec2 coord) {
     if (excess <= -1.0) return texture(materialTexture, coord);
     /* Taps per axis grow with how far past the chain the footprint is. */
     int taps = int(clamp(ceil(exp2(excess + 1.0)), 2.0,
-                         XR_SUPERSAMPLE_MAX_TAPS));
+                         max(2.0, sceneLight.spotCount.z)));
     vec2 gdx = dx / float(taps), gdy = dy / float(taps);
     vec4 sum = vec4(0.0);
     for (int j = 0; j < taps; j++) {

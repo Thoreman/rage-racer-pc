@@ -155,6 +155,16 @@ int main(void) {
     CHECK(s_frontend.attractTimer == 0 && s_audioFadeCalls == 1);
     CHECK(s_soundCue == 2);
 
+    /* Leaving the graphics page asks for GRAPHICS to be selected once. */
+    SetTitleMenuReturnSelection(TITLE_MENU_GRAPHICS);
+    g_PadPressed = PAD_START;
+    s_frontend.selection = 0;
+    UpdateTitleScreen();
+    CHECK(s_frontend.selection == TITLE_MENU_GRAPHICS);
+    g_PadPressed = PAD_START;
+    UpdateTitleScreen();
+    CHECK(s_frontend.selection == TITLE_MENU_GRAND_PRIX);
+
     puts("title screen state tests passed");
     return 0;
 }

@@ -451,6 +451,16 @@ typedef struct SoundOption {
 } SoundOption;
 
 void EnterSoundOptionMenu(void);
+void EnterGraphicsOptionMenu(void);
+/* Rows of the graphics page visible at once, and the first one shown when the
+ * cursor sits on `cursor`: unchanged while the cursor stays inside the window,
+ * otherwise the least scroll that brings it back, kept within the list. */
+enum { GRAPHICS_PAGE_WINDOW_ROWS = 8 };
+int GraphicsPageFirstVisibleRow(int cursor, int previousFirst, int windowRows,
+                                int rowCount);
+/* Asks the Options scene to open the graphics page when its entry fade ends
+ * (instead of the root menu). Set by the title menu's GRAPHICS row. */
+void OptionRequestGraphicsPage(void);
 void EnterSoundOptionMenuState(SoundOption *screen);
 void UpdateSoundOptionMenuState(SoundOption *screen);
 void UpdateSoundSettingAdjustState(SoundOption *screen);
@@ -487,5 +497,16 @@ void ResetCarShopScreen(void);
 u8 *DrawTitleMenuLabel(GameOrderingTableEntry *ot, u8 *packet,
                        TitleMenuItem item, s32 x, s32 y,
                        s32 visibleHeight, s32 selected);
+
+/* Emits an RGB8 width x height image (a title button or MenuFontTextPixels
+ * text) as run-length tiles over a bar-colour plate; the bar colour is the
+ * pixel at column 2 of row 0, and its runs are not drawn. The Scaled form
+ * stretches each source row to rowScale screen lines. */
+u8 *EmitFontPixels(GameOrderingTableEntry *ot, u8 *packet,
+                   s32 x, s32 y, s32 width, s32 height,
+                   const uint8_t *pixels);
+u8 *EmitFontPixelsScaled(GameOrderingTableEntry *ot, u8 *packet,
+                         s32 x, s32 y, s32 width, s32 height,
+                         const uint8_t *pixels, s32 rowScale);
 
 #endif

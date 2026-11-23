@@ -49,6 +49,7 @@ void UpdateMainMenuExit(void) {
             g_SceneId = 0x19;
             break;
         case TITLE_MENU_OPTIONS:
+        case TITLE_MENU_GRAPHICS:
             g_SceneId = 0x16;
             break;
         }

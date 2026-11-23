@@ -72,11 +72,17 @@ and `-DCRACK_DEBUG` (crack fill). **MSL headers were not regenerated** — run
 | `eye_scale` | 1.0 | fraction of runtime-recommended eye resolution (1.2 dropped to ~20 fps) |
 | `refresh_rate` | 72 | Hz; 72 holds solid with ~30% GPU headroom |
 | `world_scale` | 25 | game units per metre of head movement |
-| `foveation` | high | fixed foveated rendering: off/low/medium/high. Vulkan fragment density map per eye (SDL `quest-fdm` branch), on the scene and crack-fill targets, centred on each eye's view axis. Race A/B on Quest 3 (`debug.rr.fov` 0-3, `debug.rr.fovfill` 0/1 switch live): off 15.6 ms, high scene-only 14.3, high scene+fill 13.3; medium ~0.3 (noise). Density texel 16x16 min / 256 max on Quest 3 |
-| `msaa` | false | MSAA on eyes (off by default: ~40% of the GPU in heavy views) |
+| `foveation` | headset preset (high) | fixed foveated rendering: off/low/medium/high. Vulkan fragment density map per eye (SDL `quest-fdm` branch), on the scene and crack-fill targets, centred on each eye's view axis. Race A/B on Quest 3 (`debug.rr.fov` 0-3, `debug.rr.fovfill` 0/1 switch live): off 15.6 ms, high scene-only 14.3, high scene+fill 13.3; medium ~0.3 (noise). Density texel 16x16 min / 256 max on Quest 3 |
+| `msaa` | headset preset (false) | MSAA on eyes (off by default: ~40% of the GPU in heavy views) |
 | `msaa_samples` | 2 | 2 or 4 samples per pixel (4 costs ~10-15% more GPU) |
-| `max_spot_lights` | 6 | nearest car lamps lighting the scene (~0.2 ms each) |
-| `race_speed` | 100 | race speed percent, 50-150; 100 = speedometer true at `world_scale` (0.42x console on NTSC, 0.51x PAL; pause menu SPEED row, saved in race-speed) |
+| `lamp_lighting` | preset | car lamps light the scene (true/false) |
+| `lamp_glows` | preset | glow sprites around lamps (true/false) |
+| `shadows` | preset | shadows plus specular/reflections (true/false; off drops both) |
+| `max_spot_lights` | preset (2/4/6/8) | nearest car lamps lighting the scene (~0.2 ms each); page offers 2/4/6/8/ALL, ALL = 72 (renderer ceiling); `debug.rr.spots` overrides when set |
+| `texture_detail` | standard | `standard` = 2x2 far-texture taps, `high` = 4x4; the tap cap is the uniform `sceneLight.spotCount.z` in the XR shaders |
+| `mirror` | half | rear-view mirror: `off` (hidden, even with the game's camera-button toggle), `half` (half rate), `full`; `debug.rr.mirror` / `debug.rr.mirrorrate` override when set (unset or negative = use the setting) |
+| `sharpen` | 0 | 0..1 sharpening strength; page offers 0, 0.35, 0.70 |
+| `race_speed` | 100 | race speed percent, 50-150; 100 = 1.3x the speedometer-true pace at `world_scale` (play-tested; 0.55x console on NTSC, 0.66x PAL; pause menu SPEED row, saved in race-speed-v2) |
 | `catchup` | true | logic keeps console time while frames are slow (psyz absolute VBlank pacing) |
 | `hud` | true | floating HUD panel in the in-car view |
 | `hud_width` / `hud_distance` / `hud_drop` | 2.2 / 1.3 / 0.0 | HUD panel metres (gauges must sit ~40° out) |
@@ -86,6 +92,26 @@ and `-DCRACK_DEBUG` (crack fill). **MSL headers were not regenerated** — run
 | `hud_fades` | false | draw full-screen fades/flashes on the HUD panel (turns it into a solid white/black board) |
 | `stereo` | true | stereo in-car view |
 | `crack_debug` | false | paint filled crack pixels magenta |
+
+Title menu -> GRAPHICS (seventh item after OPTION, VR only,
+`PortXrAvailable()`; Options stays at five rows; cancel returns to the title
+with GRAPHICS selected) writes
+`.../files/rage-racer/graphics` (`key = value` lines, only keys set through
+the menu; `preset = ` is written only if a preset was chosen). Precedence:
+graphics file -> `rage-port.ini` -> headset default preset -> profile table
+(the default preset supplies foveation and msaa, not the profile table). Default preset by profile: `quest3`/`quest3s` HIGH, `quest2` LOW,
+`questpro` MEDIUM, other HIGH. Presets set foveation/msaa/lamp_lighting/
+lamp_glows/shadows/max_spot_lights/mirror/texture_detail: LOW
+high/off/off/off/off/2/half/standard, MEDIUM high/off/on/off/on/4/half/
+standard, HIGH high/off/on/on/on/6/half/standard, ULTRA
+medium/2x/on/on/on/8/full/high. `sharpen`, colour, resolution and refresh
+are not in presets. Page rows in order: PRESET, FOVEATION, ANTI-ALIAS,
+RESOLUTION, TEXTURE DETAIL, CAR LAMPS, LAMP LIGHTING, LAMP GLOWS, SHADOWS,
+MIRROR, SHARPEN, COLOUR, REFRESH (8 visible, scrolls). A round-1 graphics
+file (no new keys) still loads; new rows fill from the preset. A
+`max_spot_lights` not in 2/4/6/8/72 shows as its number and makes PRESET
+read CUSTOM. `debug.rr.*` switches
+still override everything and are not on the page.
 
 Headset tuner / optimiser apps set `debug.oculus.*` properties (refresh
 rate, CPU/GPU level, texture size) that override the app, and some keep

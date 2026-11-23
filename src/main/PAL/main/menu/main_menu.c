@@ -7,13 +7,23 @@
 #include "game/render_internal.h"
 #include "game/save_internal.h"
 #include "game/screens.h"
+#include "xr_profile.h"
 #include <string.h>
 
 enum {
     MAIN_MENU_ROW_REVEAL_FRAMES = 8,
-    MAIN_MENU_OPEN_FRAMES =
-        0x10 + (TITLE_MENU_ITEM_COUNT - 1) * MAIN_MENU_ROW_REVEAL_FRAMES,
 };
+
+/* Flat game: rows 0x18 apart from 0x64. The VR build can show seven rows
+ * (Extra GP unlocked), which at that pitch would run off the 240-line title
+ * display, so it packs them 0x14 apart from 0x5A (last bar ends at 226). */
+static s32 MainMenuRowY(s32 row) {
+    return PortXrAvailable() ? 0x5A + row * 0x14 : 0x64 + row * 0x18;
+}
+
+static s32 MainMenuOpenFrames(void) {
+    return 0x10 + (TitleMenuVisibleCount() - 1) * MAIN_MENU_ROW_REVEAL_FRAMES;
+}
 
 void DrawMainMenuRows(void) {
     const Frontend *frontend = MenuFrontend();
@@ -22,7 +32,7 @@ void DrawMainMenuRows(void) {
     s32 row = 0;
     s32 item = 0;
 
-    while (item < TITLE_MENU_ITEM_COUNT) {
+    while (item < TitleMenuVisibleCount()) {
         s32 clut = 0x7E85;
         s32 height;
         s32 delta;
@@ -42,7 +52,7 @@ void DrawMainMenuRows(void) {
         if (height < 0) height = 0;
 
         packet = DrawTitleMenuLabel(
-            ot, packet, (TitleMenuItem)item, 0x68, 0x64 + row * 0x18,
+            ot, packet, (TitleMenuItem)item, 0x68, MainMenuRowY(row),
             height, clut == 0x7E86);
         item++;
         row++;
@@ -55,10 +65,10 @@ void UpdateMainMenuOpen(void) {
     Frontend *frontend = MenuFrontend();
 
     frontend->menuSlide = AddClampedMenuValue(
-        frontend->menuSlide, 0, 0, MAIN_MENU_OPEN_FRAMES);
+        frontend->menuSlide, 0, 0, MainMenuOpenFrames());
     frontend->menuSlide = AddClampedMenuValue(
-        frontend->menuSlide, 1, 0, MAIN_MENU_OPEN_FRAMES);
-    if (frontend->menuSlide >= MAIN_MENU_OPEN_FRAMES) {
+        frontend->menuSlide, 1, 0, MainMenuOpenFrames());
+    if (frontend->menuSlide >= MainMenuOpenFrames()) {
         frontend->state = FRONTEND_STATE_MENU_INPUT;
     }
     DrawMainMenuRows();
@@ -140,6 +150,11 @@ void UpdateMainMenuInput(void) {
         case TITLE_MENU_OPTIONS:
             RequestOptionScreenAssets();
             MenuOption()->cursor = 0;
+            break;
+        case TITLE_MENU_GRAPHICS:
+            RequestOptionScreenAssets();
+            MenuOption()->cursor = 0;
+            OptionRequestGraphicsPage();
             break;
         }
         frontend->state = FRONTEND_STATE_MENU_EXIT;

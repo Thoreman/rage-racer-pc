@@ -36,6 +36,7 @@
 #include "modern_renderer_diagnostics.h"
 #include "../runtime_config.h"
 #include "../xr_profile.h"
+#include "../graphics_settings.h"
 #include "../native_asset_importer.h"
 #include "shaders/modern_vert_spv.h"
 #include "shaders/modern_frag_spv.h"
@@ -131,8 +132,11 @@ static SDL_GPUTexture *s_eyeMsaaDepth[2];
 /* Fixed foveation: a Vulkan fragment density map per eye, attached to the
  * scene target so the edges of each eye shade at a coarser rate. */
 static SDL_GPUTexture *s_eyeFdm[2];
+static int s_xrCrackFillUsed;
 static int s_eyeMsaaOn;
 static SDL_GPUGraphicsPipeline *s_pipeCrackFill;
+/* The s_eyeMsaaOn value s_pipeCrackFill's shader variant was built for. */
+static int s_pipeCrackFillMsaa;
 /* XR HUD panel: the 2D HUD layer alone on a transparent background
  * (premultiplied alpha, as the overlay pipelines blend), s_target-sized. */
 static SDL_GPUTexture *s_hudTarget;
@@ -1694,12 +1698,30 @@ static int ModernEnsureHudTarget(void) {
     return s_hudTarget != NULL;
 }
 
-static float ModernXrGradeSetting(const char *key, float minimum,
+static float ModernXrGradeSetting(const char *text, float minimum,
                                   float maximum) {
-    const char *text = RuntimeConfigGet(key);
     float value = text != NULL ? strtof(text, NULL) : 1.0f;
     if (!(value >= minimum && value <= maximum)) value = 1.0f;
     return value;
+}
+
+/* The VR graphics menu's MIRROR ([xr] mirror = off | half | full): 0 hides
+ * the in-car mirror, else it is re-rendered every Nth XR frame (half 2, the
+ * default; full 1). Re-read only when the settings generation changes. */
+static int ModernXrMirrorRate(void) {
+    static int rate;
+    static unsigned generation;
+    static int loaded;
+    unsigned now = GraphicsSettingsGeneration();
+    if (!loaded || generation != now) {
+        const char *mode = XrProfileSetting("xr.mirror");
+        loaded = 1;
+        generation = now;
+        rate = 2;
+        if (mode != NULL && SDL_strcasecmp(mode, "off") == 0) rate = 0;
+        if (mode != NULL && SDL_strcasecmp(mode, "full") == 0) rate = 1;
+    }
+    return rate;
 }
 
 /* [xr] foveation = off | low | medium | high (default): density falls from full at
@@ -1724,21 +1746,55 @@ static int ModernFoveationOverride(void) {
     return value >= 0 && value <= 3 ? value : -1;
 }
 
-static const ModernFoveationLevel *ModernFoveation(void) {
+/* The xr.foveation setting (VR graphics menu, else ini, else profile),
+ * re-read only when the settings generation changes. */
+static const ModernFoveationLevel *ModernFoveationSetting(void) {
     const ModernFoveationLevel *levels = s_foveationLevels;
-    const char *value = RuntimeConfigGet("xr.foveation");
-    int override = ModernFoveationOverride();
+    static const ModernFoveationLevel *level;
+    static unsigned generation;
+    static int loaded;
+    unsigned now = GraphicsSettingsGeneration();
+    const char *value;
     size_t i;
-    if (override >= 0) return override > 0 ? &levels[override - 1] : NULL;
+    if (loaded && generation == now) return level;
+    loaded = 1;
+    generation = now;
+    value = XrProfileSetting("xr.foveation");
     /* Default high: about 1.3 ms of a ~14 ms canyon frame on a Quest 3
      * (A/B while racing), edges not noticed in play. */
-    if (value == NULL) return &levels[2];
+    if (value == NULL) return level = &levels[2];
     for (i = 0; i < SDL_arraysize(s_foveationLevels); i++)
-        if (SDL_strcasecmp(value, levels[i].name) == 0) return &levels[i];
+        if (SDL_strcasecmp(value, levels[i].name) == 0)
+            return level = &levels[i];
     if (SDL_strcasecmp(value, "off") != 0)
         fprintf(stderr, "rage-port: unknown xr.foveation=%s (off, low, "
                 "medium, high)\n", value);
-    return NULL;
+    return level = NULL;
+}
+
+static const ModernFoveationLevel *ModernFoveation(void) {
+    const ModernFoveationLevel *levels = s_foveationLevels;
+    int override = ModernFoveationOverride();
+    if (override >= 0) return override > 0 ? &levels[override - 1] : NULL;
+    return ModernFoveationSetting();
+}
+
+/* What the eye targets and MSAA pipelines are built for: xr.msaa on/off and
+ * xr.msaa_samples (0 when off), re-read when the settings generation
+ * changes. */
+static int ModernXrMsaaWanted(void) {
+    static int wanted;
+    static unsigned generation;
+    static int loaded;
+    unsigned now = GraphicsSettingsGeneration();
+    if (!loaded || generation != now) {
+        loaded = 1;
+        generation = now;
+        wanted = XrProfileEnabled("xr.msaa")
+                     ? (int)ModernNativeGpuEyeSampleCount() + 1
+                     : 0;
+    }
+    return wanted;
 }
 
 /* A density map for one eye, centred where the eye looks straight ahead
@@ -1782,17 +1838,33 @@ static SDL_GPUTexture *ModernCreateEyeFdm(unsigned w, unsigned h,
 static int ModernEnsureEyeTargets(unsigned w, unsigned h,
                                   const PsyzXrView *views) {
     int eye;
-    static int foveationOverride = -1, foveateFillState = -1;
-    int override = ModernFoveationOverride();
+    static const ModernFoveationLevel *foveationBuilt;
+    static int foveateFillState = -1, msaaBuilt = -1;
+    /* The foveation level (debug.rr.fov override included), MSAA on/off and
+     * sample count: the VR graphics menu changes them between races, the
+     * debug override at any time. Either way the rebuild happens here,
+     * before this frame's passes are recorded; SDL defers destroying what
+     * is released until the frames that used it have finished. */
+    const ModernFoveationLevel *foveation = ModernFoveation();
+    int msaaWanted = ModernXrMsaaWanted();
     /* debug.rr.fovfill 0 leaves the crack-fill pass at full rate. */
     int foveateFill = XrDebugProp("fovfill", 1) != 0;
     if (s_eyeTarget[0] != NULL && s_eyeW == w && s_eyeH == h &&
-        override == foveationOverride && foveateFill == foveateFillState)
+        foveation == foveationBuilt && msaaWanted == msaaBuilt &&
+        foveateFill == foveateFillState)
         return 1;
-    foveationOverride = override;
+    foveationBuilt = foveation;
+    msaaBuilt = msaaWanted;
     foveateFillState = foveateFill;
-    /* xr.msaa (default on) renders eyes 4x multisampled. */
-    s_eyeMsaaOn = XrProfileEnabled("xr.msaa") && ModernNativeGpuEyeMsaaReady();
+    /* xr.msaa renders eyes multisampled (xr.msaa_samples); a sample count
+     * change rebuilds the MSAA pipelines inside EyeMsaaReady. */
+    s_eyeMsaaOn = msaaWanted != 0 && ModernNativeGpuEyeMsaaReady();
+    /* The crack fill reads depth without MSAA and resolved alpha coverage
+     * with it: a different shader, so rebuild it when MSAA flips. */
+    if (s_pipeCrackFill != NULL && s_pipeCrackFillMsaa != s_eyeMsaaOn) {
+        SDL_ReleaseGPUGraphicsPipeline(s_device, s_pipeCrackFill);
+        s_pipeCrackFill = NULL;
+    }
     if (s_pipeCrackFill == NULL) {
         /* The fullscreen helper wants MSL too; XR stereo only ever runs on
          * Vulkan, so the post shader's MSL stands in unused. */
@@ -1815,6 +1887,7 @@ static int ModernEnsureEyeTargets(unsigned w, unsigned h,
             spv, spvLen,
             (const char *)post_frag_msl, post_frag_msl_len, "fs_post", 2);
         s_fragmentUniformBuffers = 0;
+        s_pipeCrackFillMsaa = s_eyeMsaaOn;
         if (s_pipeCrackFill == NULL)
             fprintf(stderr, "rage-port: XR crack-fill pipeline failed: %s\n",
                     SDL_GetError());
@@ -2040,18 +2113,32 @@ static int ModernPresentXrStereo(const RageSceneSnapshot *snapshot,
     else
         ModernNativeGpuDrawStereo(cmd, s_eyeTarget, s_eyeDepth, NULL, eyes,
                                   worldScale, (int)h);
-    if (s_pipeCrackFill != NULL) {
+    /* Development aids: debug.rr.crackfill 0 presents the eye targets
+     * without the crack-fill/grade pass; debug.rr.grade 0 keeps the pass
+     * but neutral (no saturation/contrast/gamma/sharpen). */
+    s_xrCrackFillUsed = s_pipeCrackFill != NULL &&
+                        XrDebugProp("crackfill", 1) != 0;
+    if (s_xrCrackFillUsed) {
         /* [xr] saturation, contrast and gamma grade the headset image in
-         * the same pass (1.0 each leaves it as rendered). */
+         * the same pass (1.0 each leaves it as rendered). Saturation and
+         * contrast are the VR graphics menu's COLOUR row: re-read whenever
+         * the settings generation changes. */
         static float grade[4];
         static int gradeLoaded;
-        if (!gradeLoaded) {
-            const char *sharpen = RuntimeConfigGet("xr.sharpen");
+        static unsigned gradeGeneration;
+        unsigned generation = GraphicsSettingsGeneration();
+        if (!gradeLoaded || gradeGeneration != generation) {
+            const char *sharpen = XrProfileSetting("xr.sharpen");
             gradeLoaded = 1;
-            grade[0] = ModernXrGradeSetting("xr.saturation", 0.0f, 2.5f);
-            grade[1] = ModernXrGradeSetting("xr.contrast", 0.5f, 2.0f);
-            grade[2] = ModernXrGradeSetting("xr.gamma", 0.5f, 2.0f);
-            /* [xr] sharpen: 0 (off, the default) to 1. */
+            gradeGeneration = generation;
+            grade[0] = ModernXrGradeSetting(XrProfileSetting("xr.saturation"),
+                                            0.0f, 2.5f);
+            grade[1] = ModernXrGradeSetting(XrProfileSetting("xr.contrast"),
+                                            0.5f, 2.0f);
+            grade[2] = ModernXrGradeSetting(RuntimeConfigGet("xr.gamma"),
+                                            0.5f, 2.0f);
+            /* [xr] sharpen (the menu's SHARPEN): 0 (off, the default)
+             * to 1. */
             grade[3] = sharpen != NULL ? strtof(sharpen, NULL) : 0.0f;
             if (!(grade[3] >= 0.0f && grade[3] <= 1.0f)) grade[3] = 0.0f;
             fprintf(stderr,
@@ -2059,7 +2146,12 @@ static int ModernPresentXrStereo(const RageSceneSnapshot *snapshot,
                     "gamma=%.2f sharpen=%.2f\n",
                     grade[0], grade[1], grade[2], grade[3]);
         }
-        SDL_PushGPUFragmentUniformData(cmd, 0, grade, sizeof(grade));
+        if (XrDebugProp("grade", 1) != 0) {
+            SDL_PushGPUFragmentUniformData(cmd, 0, grade, sizeof(grade));
+        } else {
+            static const float neutral[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+            SDL_PushGPUFragmentUniformData(cmd, 0, neutral, sizeof(neutral));
+        }
         for (eye = 0; eye < 2; eye++) {
             /* Nearest sampling throughout: D32_FLOAT is commonly not
              * linearly filterable on mobile GPUs, and sampling it through
@@ -2092,13 +2184,22 @@ static int ModernPresentXrStereo(const RageSceneSnapshot *snapshot,
         /* The rear-view mirror: its frame is part of the HUD, the reflected
          * scene a separate small render composited into it, as in the
          * flat view. */
-        if (ModernNativeGpuHasMirrorDraws() && XrDebugProp("mirror", 1)) {
+        /* MIRROR OFF hides it whatever the game's own mirror toggle says
+         * (that toggle can still hide it when on). debug.rr.mirror and
+         * debug.rr.mirrorrate override the setting when set: -1, their
+         * unset value, means "use the setting". */
+        const int mirrorRate = ModernXrMirrorRate();
+        const int mirrorProp = XrDebugProp("mirror", -1);
+        const int mirrorShown =
+            mirrorProp >= 0 ? mirrorProp != 0 : mirrorRate != 0;
+        if (ModernNativeGpuHasMirrorDraws() && mirrorShown) {
             /* The mirror re-bins the whole scene for a 592x144 view: ~1.5 ms
              * of a Quest 3 frame in GPU traces. Re-render it every Nth XR
-             * frame (debug.rr.mirrorrate, default 2 = 36 Hz at 72) and
-             * composite the last image in between. */
+             * frame (MIRROR HALF RATE, the default: 2 = 36 Hz at 72; FULL
+             * 1) and composite the last image in between. */
             static unsigned mirrorFrame;
-            int rate = XrDebugProp("mirrorrate", 2);
+            int rate = XrDebugProp("mirrorrate", -1);
+            if (rate < 0) rate = mirrorRate > 0 ? mirrorRate : 2;
             if (rate < 1) rate = 1;
             if (mirrorFrame++ % (unsigned)rate == 0)
                 ModernNativeGpuDrawMirror(cmd, s_mirrorTarget, s_mirrorDepth,
@@ -2129,8 +2230,8 @@ static int ModernPresentXrStereo(const RageSceneSnapshot *snapshot,
     info->hud = hud ? s_hudTarget : NULL;
     info->hud_w = (Uint32)s_targetW;
     info->hud_h = (Uint32)s_targetH;
-    info->stereo[0] = s_pipeCrackFill != NULL ? s_eyeFinal[0] : s_eyeTarget[0];
-    info->stereo[1] = s_pipeCrackFill != NULL ? s_eyeFinal[1] : s_eyeTarget[1];
+    info->stereo[0] = s_xrCrackFillUsed ? s_eyeFinal[0] : s_eyeTarget[0];
+    info->stereo[1] = s_xrCrackFillUsed ? s_eyeFinal[1] : s_eyeTarget[1];
     info->stereo_w = w;
     info->stereo_h = h;
     return 1;

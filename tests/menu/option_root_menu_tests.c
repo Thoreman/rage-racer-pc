@@ -29,7 +29,7 @@ typedef struct LabelRecord {
 
 static GameFrameContext s_frame;
 static u8 s_packets[128];
-static LabelRecord s_labels[5];
+static LabelRecord s_labels[6];
 static s32 s_labelCount;
 static s32 s_lastCue;
 static GameSceneId s_lastExitScene;
@@ -39,6 +39,12 @@ static ControllerSetup s_controllerSetup;
 
 ControllerSetup *MenuControllerSetup(void) { return &s_controllerSetup; }
 static s32 s_soundMenuStarts;
+static s32 s_graphicsMenuStarts;
+static s32 s_xrAvailable;
+static s32 s_textCount;
+static s32 s_textX;
+static s32 s_textY;
+static char s_text[16];
 static s32 s_trackLoadCalls;
 static s32 s_randomValues[3];
 static s32 s_randomIndex;
@@ -71,6 +77,15 @@ void BeginControllerConfig(ControllerSetup *setup) {
     s_controllerConfigCalls++;
 }
 void EnterSoundOptionMenu(void) { s_soundMenuStarts++; }
+void EnterGraphicsOptionMenu(void) { s_graphicsMenuStarts++; }
+int PortXrAvailable(void) { return (int)s_xrAvailable; }
+void DrawText8x8(s32 x, s32 y, const char *text, s32 clutIndex) {
+    (void)clutIndex;
+    s_textCount++;
+    s_textX = x;
+    s_textY = y;
+    snprintf(s_text, sizeof(s_text), "%s", text);
+}
 s32 Random15(void) { return s_randomValues[s_randomIndex++]; }
 s32 RandomIndex(s32 count) {
     return count > 0 ? (Random15() & 0xFFF) % count : 0;
@@ -106,6 +121,9 @@ static void Reset(void) {
     s_cursorCalls = 0;
     s_controllerConfigCalls = 0;
     s_soundMenuStarts = 0;
+    s_graphicsMenuStarts = 0;
+    s_xrAvailable = 0;
+    s_textCount = 0;
     s_trackLoadCalls = 0;
     s_randomIndex = 0;
     s_drawMode = -1;
@@ -198,6 +216,39 @@ int main(void) {
     UpdateOptionRootMenu();
     CHECK(s_lastCue == 3 &&
           s_lastExitScene == GAME_SCENE_ENTER_FRONTEND);
+
+    /* The VR build keeps the same five rows: GRAPHICS lives on the title. */
+    Reset();
+    s_xrAvailable = 1;
+    DrawOptionRootMenu();
+    CHECK(s_labelCount == 5);
+    CHECK(memcmp(s_labels, expected, sizeof(expected)) == 0);
+    CHECK(s_textCount == 0);
+
+    Reset();
+    s_xrAvailable = 1;
+    s_optionMenu.cursor = INT_MAX;
+    DrawOptionRootMenu();
+    CHECK(s_optionMenu.cursor == 4);
+
+    Reset();
+    s_xrAvailable = 1;
+    s_optionMenu.cursor = 4;
+    g_PadPressed = PAD_DOWN;
+    UpdateOptionRootMenu();
+    CHECK(s_optionMenu.cursor == 0 && s_lastCue == 1);
+
+    Reset();
+    s_xrAvailable = 1;
+    s_optionMenu.cursor = 4;
+    g_PadPressed = PAD_CONFIRM;
+    UpdateOptionRootMenu();
+    CHECK(s_lastExitScene == GAME_SCENE_ENTER_FRONTEND &&
+          s_graphicsMenuStarts == 0 && g_GameMode != OPTION_MODE_GRAPHICS);
+
+    Reset();
+    DrawOptionRootMenu();
+    CHECK(s_textCount == 0);
 
     puts("option root menu preserves rendering and all navigation paths");
     return 0;

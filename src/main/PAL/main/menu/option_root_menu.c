@@ -49,7 +49,6 @@ void DrawOptionRootMenu(void) {
                                     label->textureV, 0x7F40);
     }
     g_RenderState.draw.packetCursor = QueueDrawModePrim(ot, next, 0x3F);
-
     if (g_GameMode == OPTION_MODE_ROOT) {
         DrawMenuCursorArrow(0x14, menu->cursor * 0x20 + 0x94);
     }

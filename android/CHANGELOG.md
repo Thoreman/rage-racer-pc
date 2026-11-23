@@ -1,5 +1,28 @@
 # Rage Racer on Meta Quest — changelog
 
+## 0.6.4 beta
+
+- New **GRAPHICS** page, opened from a GRAPHICS button on the title menu
+  (after OPTION; Options is unchanged): presets (LOW, MEDIUM, HIGH,
+  ULTRA) plus FOVEATION, ANTI-ALIAS, RESOLUTION, TEXTURE DETAIL, CAR
+  LAMPS, LAMP LIGHTING, LAMP GLOWS, SHADOWS, MIRROR, SHARPEN, COLOUR and
+  REFRESH rows. The page scrolls (eight rows visible) and leaving it
+  returns to the title screen. Resolution and refresh rate apply after a
+  restart, the rest from the next race. Choices are saved. Until you
+  choose, the preset matches your headset (HIGH on Quest 3 and 3S, MEDIUM
+  on Quest Pro, LOW on Quest 2). `rage-port.ini` still works for any
+  setting you have not changed on the page; the page's own graphics file
+  only holds the rows you touched.
+- Presets now also set CAR LAMPS (2/4/6/8), MIRROR and TEXTURE DETAIL.
+  Quest 2 and Quest Pro defaults use 2 and 4 car lamps. New `rage-port.ini`
+  keys `texture_detail` (standard/high), `mirror` (off/half/full) and
+  `sharpen` (0 to 1); `max_spot_lights` follows the preset unless set.
+  Quest 3 defaults are unchanged.
+- Race speed retuned: 100% is now 30% faster than in 0.6.2 and 0.6.3,
+  which play-testing found too slow (about 0.55x console speed with a USA
+  disc). The SPEED setting starts again at 100%; the range is still
+  50-150%.
+
 ## 0.6.3 beta
 
 - Foveated rendering: the outer edges of each eye are drawn at a lower

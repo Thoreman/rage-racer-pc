@@ -688,6 +688,13 @@ target_include_directories(timing_restore_tests PRIVATE
 add_test(NAME timing_restore COMMAND timing_restore_tests)
 set_tests_properties(timing_restore PROPERTIES LABELS functional)
 
+add_executable(graphics_settings_tests graphics_settings_tests.c ${CMAKE_SOURCE_DIR}/src/port/graphics_settings.c)
+target_link_libraries(graphics_settings_tests PRIVATE rage-content)
+target_include_directories(graphics_settings_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/port ${CMAKE_SOURCE_DIR}/src/port/include)
+add_test(NAME graphics_settings COMMAND graphics_settings_tests)
+set_tests_properties(graphics_settings PROPERTIES LABELS functional)
+
 if(TARGET rage-racer-smoke)
     add_test(NAME runtime_config COMMAND ${CMAKE_COMMAND}
         -DFIXTURE=$<TARGET_FILE:native_asset_fixture> -DGAME=$<TARGET_FILE:rage-racer-smoke>

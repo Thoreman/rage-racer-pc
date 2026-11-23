@@ -38,10 +38,11 @@ DEFINE_HANDLER(7)
 DEFINE_HANDLER(8)
 DEFINE_HANDLER(9)
 DEFINE_HANDLER(10)
+DEFINE_HANDLER(11)
 
 void (*g_NativeGameModeHandlers[OPTION_MODE_COUNT])(void) = {
     Handler0, Handler1, Handler2, Handler3, Handler4, Handler5,
-    Handler6, Handler7, Handler8, Handler9, Handler10,
+    Handler6, Handler7, Handler8, Handler9, Handler10, Handler11,
 };
 
 u8 *AddTilePrim(GameOrderingTableEntry *ot, u8 *prim, s32 x, s32 y, s32 w,
@@ -102,6 +103,14 @@ int main(void) {
     UpdateOptionScene();
     CHECK(s_handlerCalls[OPTION_MODE_NEGCON_NEUTRAL] == 1);
     CHECK(s_hintCalls == 0);
+
+    /* The graphics page owns the footer band the hint would overlap. */
+    Reset(OPTION_MODE_GRAPHICS);
+    UpdateOptionScene();
+    CHECK(s_hintCalls == 0);
+    Reset(OPTION_MODE_ROOT);
+    UpdateOptionScene();
+    CHECK(s_hintCalls == 1);
 
     /* The first frame of a fresh OPTION scene arms the fade-in that the
      * fade mode needs before it can open the root menu. */

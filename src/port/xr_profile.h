@@ -1,13 +1,25 @@
 #ifndef RAGE_XR_PROFILE_H
 #define RAGE_XR_PROFILE_H
 
+/* The ini value for an "xr." key, else the profile's default, else NULL.
+ * Layering below the menu file; GraphicsSettingsInit takes this as its base. */
+const char *XrProfileBaseSetting(const char *key);
+
+/* The effective value: the VR graphics menu's value for the keys it owns
+ * (once XrProfileGraphicsStart has run), else XrProfileBaseSetting(key). */
+const char *XrProfileSetting(const char *key);
+
+/* Initialises the VR graphics settings over XrProfileBaseSetting and loads
+ * the user's saved "graphics" file. Call once at startup, VR builds only. */
+void XrProfileGraphicsStart(void);
+
+/* 1 when this build can run in a headset (Android, or RAGE_PC_XR). */
+int PortXrAvailable(void);
+
 /* Per-headset defaults for the [xr] performance settings. The profile is
  * picked from the device ([xr] profile = auto, the default) or named
  * explicitly: quest2, questpro, quest3, quest3s. A value written in the ini
  * always wins over the profile. */
-
-/* The ini value for an "xr." key, else the profile's default, else NULL. */
-const char *XrProfileSetting(const char *key);
 
 /* 1 unless the resolved setting is present and spells false. */
 int XrProfileEnabled(const char *key);
@@ -28,7 +40,7 @@ const char *XrProfileName(void);
 
 static inline int XrDebugProp(const char *name, int fallback) {
 #ifdef __ANDROID__
-    enum { SLOTS = 8 };
+    enum { SLOTS = 16 };
     static struct {
         const char *name;
         int value, ticks;

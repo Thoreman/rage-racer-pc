@@ -50,6 +50,23 @@ static int DarkColumns(const uint8_t *pixels) {
     return count;
 }
 
+static int DarkColumnsIn(const uint8_t *pixels, int width) {
+    int column;
+    int count = 0;
+
+    for (column = 1; column < width - 1; column++) {
+        int row;
+        for (row = 0; row < MENU_LABEL_HEIGHT; row++) {
+            const uint8_t *pixel = pixels + (row * width + column) * 3;
+            if (pixel[0] < 40 && pixel[1] < 40 && pixel[2] < 40) {
+                count++;
+                break;
+            }
+        }
+    }
+    return count;
+}
+
 static void ExpectPlate(int selected, s32 height) {
     int index;
     int plates = 0;
@@ -122,6 +139,45 @@ int main(void) {
     assert(DrawTitleMenuLabel(NULL, packet, TITLE_MENU_CUSTOM, 104, 100, 0, 0) ==
            packet);
     assert(s_tileCount == 0);
+
+    {
+        int width = 0;
+        int height = 0;
+        int otherWidth = 0;
+        char text[24];
+        const uint8_t *first = MenuFontTextPixels("TEXTURE DETAIL", 0, &width, &height);
+        const uint8_t *again;
+        const uint8_t *hot;
+        const uint8_t *shortText;
+        int index;
+
+        /* Page text: the title buttons' height, colours and bevel. */
+        assert(first != NULL);
+        assert(height == MENU_LABEL_HEIGHT);
+        assert(width > 80 && width <= 224);
+        assert(first[2 * 3] == 0x78 && first[0] == 0x98);
+        assert(first[(width - 1) * 3] == 0x48);
+        again = MenuFontTextPixels("TEXTURE DETAIL", 0, &otherWidth, &height);
+        assert(again == first && otherWidth == width);
+        hot = MenuFontTextPixels("TEXTURE DETAIL", 1, &otherWidth, &height);
+        assert(hot != NULL && hot != first && otherWidth == width);
+        assert(hot[2 * 3] == 0xD0 && hot[1 + 2 * 3] == 0x50);
+        shortText = MenuFontTextPixels("OFF", 0, &otherWidth, &height);
+        assert(shortText != NULL && otherWidth < width);
+        assert(DarkColumnsIn(first, width) > 20);
+        assert(MenuFontTextPixels("", 0, &width, &height) == NULL);
+        assert(MenuFontTextPixels(NULL, 0, &width, &height) == NULL);
+        assert(MenuFontTextPixels("THIS TEXT IS FAR TOO LONG FOR THE POOL KEY",
+                                  0, &width, &height) == NULL);
+
+        /* A flood of distinct strings recycles the fixed pool and still
+         * returns drawable pixels. */
+        for (index = 0; index < 500; index++) {
+            snprintf(text, sizeof(text), "VALUE %d", index);
+            assert(MenuFontTextPixels(text, index & 1, &width, &height) != NULL);
+            assert(height == MENU_LABEL_HEIGHT && width > 12);
+        }
+    }
 
     puts("menu label font tests passed");
     return 0;

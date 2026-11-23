@@ -36,6 +36,7 @@ void (*g_NativeGameModeHandlers[OPTION_MODE_COUNT])(void) = {
     UpdateNegconNeutralScreen,
     UpdateNegconSteerPlayScreen,
     UpdateNegconMaxTwistScreen,
+    UpdateGraphicsOptionMenu,
 };
 
 void (*g_SceneHandlers[GAME_SCENE_HANDLER_COUNT])(void) = {

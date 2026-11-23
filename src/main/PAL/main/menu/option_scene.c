@@ -29,7 +29,8 @@ static void DrawOptionSceneOverlay(void) {
     GameOrderingTableEntry *ot = GamePrimaryOrderingTable(54);
     u8 *next;
 
-    if (g_GameMode != OPTION_MODE_NEGCON_NEUTRAL) {
+    if (g_GameMode != OPTION_MODE_NEGCON_NEUTRAL &&
+        g_GameMode != OPTION_MODE_GRAPHICS) {
         DrawPadTypeHint();
     }
 

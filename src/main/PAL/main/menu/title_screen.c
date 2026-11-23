@@ -16,6 +16,12 @@ enum {
     TITLE_TIMER_ANGLE_MASK = 0xFE0,
 };
 
+static s32 s_returnSelection = TITLE_MENU_GRAND_PRIX;
+
+void SetTitleMenuReturnSelection(TitleMenuItem item) {
+    s_returnSelection = item;
+}
+
 void EnterTitleScreen(void) {
     Frontend *frontend = MenuFrontend();
 
@@ -87,7 +93,8 @@ void UpdateTitleScreen(void) {
         PlaySoundCue(2);
         frontend->state = FRONTEND_STATE_MENU_OPENING;
         frontend->idleTimer = 0;
-        frontend->selection = TITLE_MENU_GRAND_PRIX;
+        frontend->selection = s_returnSelection;
+        s_returnSelection = TITLE_MENU_GRAND_PRIX;
         if (frontend->attractTimer > 0) {
             frontend->attractTimer = 0;
             StartCdVolumeFade(1);

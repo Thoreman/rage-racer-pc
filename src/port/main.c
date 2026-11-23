@@ -95,6 +95,7 @@ int main(int argc, char **argv) {
      * the environment: [xr] eye_scale (fraction of the runtime's recommended
      * eye resolution) and refresh_rate (Hz). */
     /* SDL_getenv reads SDL's own environment snapshot, so set them there. */
+    if (PortXrAvailable()) XrProfileGraphicsStart();
     /* Unset values come from the headset's profile (xr_profile.c). */
     SDL_SetEnvironmentVariable(SDL_GetEnvironment(), "PSYZ_XR_EYE_SCALE",
                                XrProfileSetting("xr.eye_scale"), true);

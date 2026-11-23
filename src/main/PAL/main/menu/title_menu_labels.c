@@ -15,36 +15,46 @@ static u8 ColorComponent(u16 color, s32 shift) {
     return ((color >> shift) & 0x1F) << 3;
 }
 
-/* AddPrim prepends, so the bar is queued after the ink and ends up behind it. */
-static u8 *EmitFontLabel(GameOrderingTableEntry *ot, u8 *packet,
-                         s32 x, s32 y, s32 visibleHeight,
-                         const uint8_t *pixels) {
+/* AddPrim prepends, so the bar is queued after the ink and ends up behind it.
+ * Pixel (2,0) is the bar colour; runs of it are skipped. rowScale stretches
+ * every source row to that many screen lines, for the 480-line scenes whose
+ * pixels are half as tall as they are wide. */
+u8 *EmitFontPixelsScaled(GameOrderingTableEntry *ot, u8 *packet,
+                         s32 x, s32 y, s32 width, s32 height,
+                         const uint8_t *pixels, s32 rowScale) {
     const uint8_t *bar = pixels + 2 * 3;
     s32 row;
 
-    for (row = 0; row < visibleHeight; row++) {
-        const uint8_t *line = pixels + row * MENU_LABEL_WIDTH * 3;
+    if (width < 3 || height <= 0 || rowScale < 1) return packet;
+    for (row = 0; row < height; row++) {
+        const uint8_t *line = pixels + row * width * 3;
         s32 column = 0;
 
-        while (column < MENU_LABEL_WIDTH) {
+        while (column < width) {
             const uint8_t *pixel = line + column * 3;
             s32 start = column;
             int plate = pixel[0] == bar[0] && pixel[1] == bar[1] &&
                         pixel[2] == bar[2];
 
             column++;
-            while (column < MENU_LABEL_WIDTH &&
+            while (column < width &&
                    memcmp(pixel, line + column * 3, 3) == 0) {
                 column++;
             }
             if (plate) continue;
-            packet = AddTilePrim(ot, packet, x + start, y + row,
-                                 column - start, 1,
+            packet = AddTilePrim(ot, packet, x + start, y + row * rowScale,
+                                 column - start, rowScale,
                                  pixel[0], pixel[1], pixel[2]);
         }
     }
-    return AddTilePrim(ot, packet, x, y, MENU_LABEL_WIDTH, visibleHeight,
+    return AddTilePrim(ot, packet, x, y, width, height * rowScale,
                        bar[0], bar[1], bar[2]);
+}
+
+u8 *EmitFontPixels(GameOrderingTableEntry *ot, u8 *packet,
+                   s32 x, s32 y, s32 width, s32 height,
+                   const uint8_t *pixels) {
+    return EmitFontPixelsScaled(ot, packet, x, y, width, height, pixels, 1);
 }
 
 u8 *DrawTitleMenuLabel(GameOrderingTableEntry *ot, u8 *packet,
@@ -73,7 +83,8 @@ u8 *DrawTitleMenuLabel(GameOrderingTableEntry *ot, u8 *packet,
 
     fontPixels = MenuLabelFontPixels(item, selected);
     if (fontPixels != NULL) {
-        return EmitFontLabel(ot, packet, x, y, visibleHeight, fontPixels);
+        return EmitFontPixels(ot, packet, x, y, MENU_LABEL_WIDTH,
+                              visibleHeight, fontPixels);
     }
 
     for (row = 0; row < visibleHeight; row++) {

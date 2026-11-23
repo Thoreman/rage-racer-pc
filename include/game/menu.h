@@ -511,6 +511,7 @@ void UpdateClassRecordMenu(void);
 void UpdateClassRecordBrowse(void);
 void DrawPadTypeHint(void);
 void UpdateSoundOptionMenu(void);
+void UpdateGraphicsOptionMenu(void);
 void UpdateSoundSettingAdjust(void);
 void DrawTimeAttackPlate(MenuWidgets *widgets);
 /* Validate and activate one double-buffered showroom model for both CPU-side

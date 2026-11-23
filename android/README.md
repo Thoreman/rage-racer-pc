@@ -59,10 +59,9 @@ Notes:
 - The last row of the pause menu switches controller vibration on or off.
   The setting is remembered.
 - The row above it, **SPEED**, sets how fast races run, from 50% to 150%
-  (left/right, or press to step). At 100% the car passes the scenery as fast
-  as the speedometer says: the console's own pace looks about twice that in
-  life-size VR. Menus and movies always run at normal speed. The setting is
-  remembered.
+  (left/right, or press to step). 100% is tuned for life-size VR, where the
+  console's own pace looks about twice as fast as on a TV. Menus and movies
+  always run at normal speed. The setting is remembered.
 - The rear-view mirror appears in the in-car view in Grand Prix and Custom
   Race.
 - **Custom Race** on the title menu offers every course, class and car
@@ -82,32 +81,100 @@ The app picks settings for the headset it is running on:
 
 The game itself always runs at the right speed; these settings only decide
 how smoothly the picture follows your head. A steady 72 Hz looks smoother
-than an uneven higher rate. Anti-aliasing (MSAA) is off by default, which
-keeps heavy scenes near 72 Hz on a stock Quest 3; `msaa = true` smooths
-edges at a large GPU cost (best with a performance tuner or a lower
-`eye_scale`), and `msaa_samples = 4` smooths them further.
-Foveated rendering draws the outer edges of each eye at a lower
-resolution, where the lenses blur them anyway: `foveation = high` (the
-default) saves about 14% of the GPU time; `medium`, `low` and `off` are
-gentler.
+than an uneven higher rate.
 
-If the picture stutters or edges wobble as you turn your head, lower the
-settings. Create `rage-port.ini` in
+### Graphics page
+
+If the picture stutters or edges wobble as you turn your head, or you want
+it sharper, choose **GRAPHICS** on the title menu (just after OPTION).
+Up/down moves between rows. Press A on a row to edit it: left/right changes
+the value, A keeps it and B undoes it. B (or the EXIT row) in the list
+leaves the page. The page shows eight rows at a time and scrolls. Leaving it
+takes you back to the title screen with GRAPHICS still selected.
+
+| Row | Choices | Takes effect |
+|---|---|---|
+| PRESET | LOW, MEDIUM, HIGH, ULTRA, CUSTOM | next race |
+| FOVEATION | OFF, LOW, MEDIUM, HIGH | next race |
+| ANTI-ALIAS | OFF, 2X, 4X | next race |
+| RESOLUTION | 70% to 100%, in steps of 5 | restart the app |
+| TEXTURE DETAIL | STANDARD, HIGH | next race |
+| CAR LAMPS | 2, 4, 6, 8, ALL | next race |
+| LAMP LIGHTING | ON, OFF | next race |
+| LAMP GLOWS | ON, OFF | next race |
+| SHADOWS | ON, OFF | next race |
+| MIRROR | OFF, HALF RATE, FULL | next race |
+| SHARPEN | OFF, LOW, HIGH | next race |
+| COLOUR | STANDARD, VIVID | next race |
+| REFRESH | 72, 80, 90, 120 Hz | restart the app |
+
+Each row shows **APPLIES FROM NEXT RACE** or **RESTART TO APPLY**. Your
+choices are remembered.
+
+- A preset sets FOVEATION, ANTI-ALIAS, TEXTURE DETAIL, CAR LAMPS, LAMP
+  LIGHTING, LAMP GLOWS, SHADOWS and MIRROR together:
+
+  | Preset | Foveation | Anti-alias | Texture detail | Car lamps | Lamp lighting | Lamp glows | Shadows | Mirror |
+  |---|---|---|---|---|---|---|---|---|
+  | LOW | HIGH | OFF | STANDARD | 2 | OFF | OFF | OFF | HALF RATE |
+  | MEDIUM | HIGH | OFF | STANDARD | 4 | ON | OFF | ON | HALF RATE |
+  | HIGH | HIGH | OFF | STANDARD | 6 | ON | ON | ON | HALF RATE |
+  | ULTRA | MEDIUM | 2X | HIGH | 8 | ON | ON | ON | FULL |
+
+  Change any of those rows yourself and PRESET reads CUSTOM. RESOLUTION,
+  SHARPEN, COLOUR and REFRESH are not part of a preset.
+- Until you choose, the page starts on the preset for your headset: HIGH on
+  a Quest 3 or 3S, LOW on a Quest 2, MEDIUM on a Quest Pro.
+- Foveated rendering draws the outer edges of each eye at a lower
+  resolution, where the lenses blur them anyway. HIGH (the default on
+  Quest 3) saves about 14% of the GPU time; MEDIUM, LOW and OFF are
+  gentler.
+- Anti-aliasing (MSAA) smooths edges at a large GPU cost, so it is off in
+  most presets. It keeps heavy scenes near 72 Hz on a stock Quest 3 when
+  off; 4X smooths further than 2X (best with a performance tuner or a lower
+  RESOLUTION).
+- LAMP LIGHTING lets the nearest car lamps light the scene and LAMP GLOWS
+  draws the glow around them. SHADOWS also covers the shiny highlights and
+  reflections: turning it off removes those too.
+- CAR LAMPS is how many of the nearest car lamps light the scene (about
+  0.2 ms of GPU time each); ALL removes the limit.
+- TEXTURE DETAIL HIGH samples distant textures more finely, which calms
+  shimmer on the stands and finish line, at a GPU cost.
+- MIRROR OFF hides the rear-view mirror; HALF RATE redraws it every other
+  frame; FULL redraws it every frame.
+- SHARPEN adds a light sharpening pass: LOW is gentle, HIGH is strong.
+- VIVID colour gives a richer picture (more saturation and contrast).
+
+### Settings file
+
+The page keeps your choices in its own graphics file, and it only overrides
+the settings you actually changed on the page. For everything else, or to set
+values before the first launch, create `rage-port.ini` in
 `/sdcard/Android/data/org.rageracer.quest/files/` containing, for example:
 
 ```ini
 [xr]
 refresh_rate = 72
 eye_scale = 0.8
+foveation = high
+msaa = true
+msaa_samples = 4
+lamp_lighting = true
+lamp_glows = true
+shadows = true
+max_spot_lights = 6
+mirror = half
+texture_detail = standard
+sharpen = 0
 ```
 
-The same file can adjust the picture in the headset: `saturation`, `contrast`
-and `gamma` each default to `1.0`; for a richer image try
-`saturation = 1.25` and `contrast = 1.08`.
+`saturation`, `contrast` and `gamma` each default to `1.0`; for a richer
+image try `saturation = 1.25` and `contrast = 1.08`.
 
-Anything written there overrides the automatic profile. `profile = quest2`
-(or `quest3`, `quest3s`, `questpro`) forces a whole profile. The full list
-of settings is in the developer notes.
+Values in `rage-port.ini` override the headset's default preset, and a
+setting you changed on the page overrides `rage-port.ini`. `profile = quest2` (or `quest3`, `quest3s`, `questpro`)
+forces a whole profile. The full list of settings is in the developer
+notes.
 
 ## Troubleshooting
 

@@ -54,6 +54,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../xr_profile.h"
+#include "../graphics_settings.h"
 
 /*
  * The texture cache holds one entry per material and is emptied whole when the
@@ -610,6 +611,9 @@ static int ModernNativeBuildCamera(const RenderCamera *camera, float aspect,
         out->fogRange[2] = 1.0f / camera->fogNear;
         out->fogRange[3] = out->fogRange[2] - 1.0f / camera->fogFar;
     }
+    /* Development aid: debug.rr.fog 0 drops the GPU fog in XR eyes. */
+    if (s_eye != NULL && XrDebugProp("fog", 1) == 0)
+        memset(out->fogRange, 0, sizeof(out->fogRange));
     if (s_eye != NULL) ModernNativeApplyEye(s_eye, s_eyeWorldScale, out);
     return 1;
 }
@@ -755,6 +759,8 @@ typedef struct ModernNativePipelineSet {
 } ModernNativePipelineSet;
 static ModernNativePipelineSet s_msaa;
 static int s_msaaState; /* 0 untried, 1 ready, -1 unavailable */
+/* The sample count s_msaaState was decided for. */
+static SDL_GPUSampleCount s_msaaSamples;
 
 static void ModernNativeReleaseMsaaPipelines(void) {
     SDL_GPUGraphicsPipeline **all[] = {
@@ -770,25 +776,42 @@ static void ModernNativeReleaseMsaaPipelines(void) {
     s_msaaState = 0;
 }
 
-/* XR eye multisampling: [xr] msaa_samples = 2 (default) or 4. Fewer samples
- * cost less of the fragment-bound eye passes, which can be spent on eye
- * resolution instead. Every MSAA eye pipeline and target uses this count. */
+/* XR eye multisampling: [xr] msaa_samples = 2 (default) or 4, also set by
+ * the VR graphics menu's ANTI-ALIAS row. Fewer samples cost less of the
+ * fragment-bound eye passes, which can be spent on eye resolution instead.
+ * Every MSAA eye pipeline and target uses this count. Read on every call:
+ * the menu can change it between races. */
 SDL_GPUSampleCount ModernNativeGpuEyeSampleCount(void) {
-    static int samples;
-    if (samples == 0) {
-        samples = RuntimeConfigInt("xr.msaa_samples", 2, 2, 4) <= 2 ? 2 : 4;
+    static int logged;
+    int samples;
+    if (!RuntimeParseInt(XrProfileSetting("xr.msaa_samples"), 0, 2, 4,
+                         &samples))
+        samples = 2;
+    samples = samples <= 2 ? 2 : 4;
+    if (samples != logged) {
+        logged = samples;
         fprintf(stderr, "rage-port: XR MSAA samples %d\n", samples);
     }
     return samples == 2 ? SDL_GPU_SAMPLECOUNT_2 : SDL_GPU_SAMPLECOUNT_4;
 }
 
+/* Called only while the eye targets are being (re)built, before the frame's
+ * passes are recorded: a sample count change releases the old pipelines
+ * here (SDL defers their destruction until earlier frames finish). */
 int ModernNativeGpuEyeMsaaReady(void) {
     SDL_GPUShader *vertex, *skyVertex, *skyFragment;
     SDL_GPUShader *textureFragment, *textureCoverage, *colorCoverage;
     SDL_GPUShader *textureSolid;
     SDL_GPUSampleCount samples = ModernNativeGpuEyeSampleCount();
+    if (s_msaaState != 0 && samples != s_msaaSamples) {
+        fprintf(stderr, "rage-port: XR MSAA %dx -> %dx, rebuilding pipelines\n",
+                s_msaaSamples == SDL_GPU_SAMPLECOUNT_2 ? 2 : 4,
+                samples == SDL_GPU_SAMPLECOUNT_2 ? 2 : 4);
+        ModernNativeReleaseMsaaPipelines(); /* resets s_msaaState to 0 */
+    }
     if (s_msaaState != 0) return s_msaaState > 0;
     s_msaaState = -1;
+    s_msaaSamples = samples;
     if (s_device == NULL ||
         !SDL_GPUTextureSupportsSampleCount(s_device,
                                            SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
@@ -2368,6 +2391,52 @@ static void ModernNativeCullForEye(uint8_t *visible,
     }
 }
 
+/* The VR graphics menu's eye effects (LAMP LIGHTING, LAMP GLOWS, SHADOWS,
+ * CAR LAMPS, TEXTURE DETAIL), re-read only when the settings generation
+ * changes. maxSpots is always within 0..RENDER_SPOT_LIGHT_CAPACITY;
+ * textureTaps is the far-texture tap cap per axis (2 or 4). */
+typedef struct ModernNativeEyeEffects {
+    int lampLighting, lampGlows, shadows;
+    int maxSpots, textureTaps;
+} ModernNativeEyeEffects;
+
+/* [xr] max_spot_lights (the CAR LAMPS row): the menu offers 2..8 and 72,
+ * but an ini may hold any text. Non-numbers fall back to 6; numbers are
+ * clamped to the renderer's range before the integer conversion. */
+static int ModernNativeMaxSpotsSetting(const char *text) {
+    char *end;
+    double value;
+    if (text == NULL || text[0] == '\0') return 6;
+    value = strtod(text, &end);
+    if (end == text || *end != '\0' || value != value) return 6;
+    if (value <= 0.0) return 0;
+    if (value >= (double)RENDER_SPOT_LIGHT_CAPACITY)
+        return RENDER_SPOT_LIGHT_CAPACITY;
+    return (int)value;
+}
+
+static const ModernNativeEyeEffects *ModernNativeGpuEyeEffects(void) {
+    static ModernNativeEyeEffects effects;
+    static unsigned generation;
+    static int loaded;
+    unsigned now = GraphicsSettingsGeneration();
+    if (!loaded || generation != now) {
+        loaded = 1;
+        generation = now;
+        effects.lampLighting = XrProfileEnabled("xr.lamp_lighting");
+        effects.lampGlows = XrProfileEnabled("xr.lamp_glows");
+        effects.shadows = XrProfileEnabled("xr.shadows");
+        effects.maxSpots =
+            ModernNativeMaxSpotsSetting(XrProfileSetting("xr.max_spot_lights"));
+        {
+            const char *detail = XrProfileSetting("xr.texture_detail");
+            effects.textureTaps =
+                detail != NULL && SDL_strcasecmp(detail, "high") == 0 ? 4 : 2;
+        }
+    }
+    return &effects;
+}
+
 static void ModernNativeGpuDrawSet(
     SDL_GPUCommandBuffer *command,
     SDL_GPUTexture *colorTarget, SDL_GPUTexture *depthTarget, int clearColor,
@@ -2462,16 +2531,14 @@ static void ModernNativeGpuDrawSet(
         /* XR eyes look anywhere, so the forward frustum cannot cull lamps.
          * Every lamp costs every pixel of both eyes, though, and with the
          * whole field published that is far too much for a headset GPU:
-         * keep the [xr] max_spot_lights (default 6; each lamp costs ~0.2 ms
-         * a frame on a Quest 3) nearest the camera. */
-        static int configured = -1;
-        int maxSpots;
+         * keep the [xr] max_spot_lights (the menu's CAR LAMPS, default 6;
+         * each lamp costs ~0.2 ms a frame on a Quest 3) nearest the camera.
+         * debug.rr.spots overrides when set (-1, the unset value, means
+         * the setting: XrDebugProp caches its fallback for ~100 calls). */
+        int maxSpots = XrDebugProp("spots", -1);
         float nearest[RENDER_SPOT_LIGHT_CAPACITY];
         const Vec3 eye = renderCamera->transform.position;
-        if (configured < 0)
-            configured = RuntimeConfigInt("xr.max_spot_lights", 6, 0,
-                                          RENDER_SPOT_LIGHT_CAPACITY);
-        maxSpots = XrDebugProp("spots", configured);
+        if (maxSpots < 0) maxSpots = ModernNativeGpuEyeEffects()->maxSpots;
         if (maxSpots < 0) maxSpots = 0;
         if (maxSpots > RENDER_SPOT_LIGHT_CAPACITY)
             maxSpots = RENDER_SPOT_LIGHT_CAPACITY;
@@ -2505,9 +2572,21 @@ static void ModernNativeGpuDrawSet(
         }
     }
     light.spotCount[0] = (float)visibleSpots;
-    /* XR GPU probing: debug.rr.shade bitmask of shader features to skip
-     * (see native_texture.frag.glsl); never set outside the headset. */
-    light.spotCount[1] = s_eye != NULL ? (float)XrDebugProp("shade", 0) : 0.0f;
+    /* XR eyes: bitmask of shader features to skip (see
+     * native_texture.frag.glsl). The menu's LAMP LIGHTING off skips 4,
+     * SHADOWS off skips 1 and 2; debug.rr.shade adds bits for GPU probing.
+     * spotCount[2] is the far-texture tap cap of the XR_SUPERSAMPLE
+     * variants (the menu's TEXTURE DETAIL). Never set outside the headset. */
+    if (s_eye != NULL) {
+        const ModernNativeEyeEffects *effects = ModernNativeGpuEyeEffects();
+        light.spotCount[1] = (float)(XrDebugProp("shade", 0) |
+                                     (!effects->lampLighting ? 4 : 0) |
+                                     (!effects->shadows ? 3 : 0));
+        light.spotCount[2] = (float)effects->textureTaps;
+    } else {
+        light.spotCount[1] = 0.0f;
+        light.spotCount[2] = 0.0f;
+    }
     SDL_PushGPUFragmentUniformData(command, 0, &light, sizeof(light));
 
     ModernNativeBuildShadowCamera(&s_shadowMap, &shadowCamera);
@@ -2650,7 +2729,8 @@ static void ModernNativeGpuDrawSet(
             drawCount++;
         }
     }
-    if (s_eye == NULL || XrDebugProp("glow", 1))
+    if (s_eye == NULL ||
+        (XrDebugProp("glow", 1) && ModernNativeGpuEyeEffects()->lampGlows))
         DrawLampGlows(command, pass, renderCamera, &camera);
     SDL_EndGPURenderPass(pass);
     if (drawCount != 0 && RuntimeConfigEnabled("diagnostics.modern_asset_trace")) {

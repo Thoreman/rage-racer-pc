@@ -137,6 +137,7 @@ add_executable(main_menu_state_tests
     ${CMAKE_SOURCE_DIR}/src/main/PAL/main/menu/main_menu.c
     ${CMAKE_SOURCE_DIR}/src/main/PAL/main/menu/title_menu_navigation.c)
 target_include_directories(main_menu_state_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/port
     ${CMAKE_SOURCE_DIR}/src/port/include
     ${CMAKE_SOURCE_DIR}/external/psyz/psyz/include
     ${CMAKE_SOURCE_DIR}/include)
@@ -1154,6 +1155,7 @@ add_executable(title_menu_navigation_tests
     title_menu_navigation_tests.c
     ${CMAKE_SOURCE_DIR}/src/main/PAL/main/menu/title_menu_navigation.c)
 target_include_directories(title_menu_navigation_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/port
     ${CMAKE_SOURCE_DIR}/src/port/include
     ${CMAKE_SOURCE_DIR}/external/psyz/psyz/include
     ${CMAKE_SOURCE_DIR}/include)
@@ -1292,6 +1294,7 @@ add_executable(option_root_menu_tests
     option_root_menu_tests.c
     ${CMAKE_SOURCE_DIR}/src/main/PAL/main/menu/option_root_menu.c)
 target_include_directories(option_root_menu_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/port
     ${CMAKE_SOURCE_DIR}/src/port/include
     ${CMAKE_SOURCE_DIR}/external/psyz/psyz/include
     ${CMAKE_SOURCE_DIR}/include)
@@ -1606,3 +1609,26 @@ if(TARGET rage-racer-smoke)
     set_tests_properties(volume_view PROPERTIES LABELS e2e TIMEOUT 150
         SKIP_REGULAR_EXPRESSION "SKIP:")
 endif()
+
+add_executable(graphics_option_menu_tests
+    graphics_option_menu_tests.c
+    ${CMAKE_SOURCE_DIR}/src/main/PAL/main/menu/graphics_option_menu.c
+    ${CMAKE_SOURCE_DIR}/src/port/graphics_settings.c)
+target_include_directories(graphics_option_menu_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/port
+    ${CMAKE_SOURCE_DIR}/src/port/include
+    ${CMAKE_SOURCE_DIR}/external/psyz/psyz/include
+    ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(graphics_option_menu_tests PRIVATE __psyz=1)
+if(MSVC)
+    target_compile_options(graphics_option_menu_tests PRIVATE
+        "/FI${CMAKE_SOURCE_DIR}/src/port/include/rage/compat.h")
+else()
+    target_compile_options(graphics_option_menu_tests PRIVATE
+        "${RAGE_FORCE_INCLUDE_OPTION}${CMAKE_SOURCE_DIR}/src/port/include/rage/compat.h"
+        ${RAGE_STRICT_WARNING_OPTIONS})
+endif()
+target_link_libraries(graphics_option_menu_tests PRIVATE psyz)
+add_test(NAME graphics_option_menu COMMAND graphics_option_menu_tests
+         "${CMAKE_CURRENT_BINARY_DIR}/graphics_option_menu_test.out")
+set_tests_properties(graphics_option_menu PROPERTIES LABELS functional)

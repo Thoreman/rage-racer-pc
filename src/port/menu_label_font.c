@@ -2,7 +2,9 @@
 
 #include "game/frontend_internal.h"
 
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #if defined(__clang__)
 #pragma clang diagnostic push
@@ -32,6 +34,7 @@ static const char *kLabels[MENU_LABEL_COUNT] = {
     "CUSTOM",
     "SAVE&LOAD",
     "OPTION",
+    "GRAPHICS",
 };
 
 /* Cap height in the 16px bar, plus one pixel of drop shadow under the ink.
@@ -88,7 +91,7 @@ static void BlendPixel(uint8_t *pixel, int red, int green, int blue, int alpha) 
     pixel[2] = (uint8_t)((pixel[2] * (255 - alpha) + blue * alpha) / 255);
 }
 
-static void Stamp(uint8_t *image, float scale, float penX, int baseline,
+static void Stamp(uint8_t *image, int imageWidth, float scale, float penX, int baseline,
                   int codepoint, int offsetX, int offsetY,
                   int red, int green, int blue) {
     int width = 0;
@@ -113,19 +116,19 @@ static void Stamp(uint8_t *image, float scale, float penX, int baseline,
             int x = originX + column;
             int alpha = bitmap[row * width + column];
 
-            if (x < 1 || x >= MENU_LABEL_WIDTH - 1 || alpha == 0) continue;
-            BlendPixel(image + (y * MENU_LABEL_WIDTH + x) * 3,
+            if (x < 1 || x >= imageWidth - 1 || alpha == 0) continue;
+            BlendPixel(image + (y * imageWidth + x) * 3,
                        red, green, blue, alpha);
         }
     }
     stbtt_FreeBitmap(bitmap, NULL);
 }
 
-static void Paint(int item, int selected) {
-    uint8_t *image = g_pixels[item][selected];
-    const char *text = kLabels[item];
+/* Bar, bevel edges, shadow and ink for one line of text in a width-wide image
+ * of MENU_LABEL_HEIGHT rows; pen is the left edge of the first glyph. */
+static void PaintText(uint8_t *image, int width, const char *text, int selected,
+                      float pen) {
     float scale = stbtt_ScaleForPixelHeight(&g_font, kPixelHeight);
-    float pen;
     int ascent = 0;
     int descent = 0;
     int lineGap = 0;
@@ -146,14 +149,14 @@ static void Paint(int item, int selected) {
     baseline = top + (int)((float)ascent * scale + 0.5f);
 
     for (y = 0; y < MENU_LABEL_HEIGHT; y++) {
-        for (x = 0; x < MENU_LABEL_WIDTH; x++) {
-            uint8_t *pixel = image + (y * MENU_LABEL_WIDTH + x) * 3;
+        for (x = 0; x < width; x++) {
+            uint8_t *pixel = image + (y * width + x) * 3;
 
             if (x == 0) {
                 pixel[0] = (uint8_t)(selected ? 0xF8 : 0x98);
                 pixel[1] = (uint8_t)(selected ? 0x70 : 0x98);
                 pixel[2] = (uint8_t)(selected ? 0x70 : 0x98);
-            } else if (x == MENU_LABEL_WIDTH - 1) {
+            } else if (x == width - 1) {
                 pixel[0] = (uint8_t)(selected ? 0x90 : 0x48);
                 pixel[1] = (uint8_t)(selected ? 0x20 : 0x48);
                 pixel[2] = (uint8_t)(selected ? 0x20 : 0x48);
@@ -165,18 +168,25 @@ static void Paint(int item, int selected) {
         }
     }
 
-    pen = ((float)MENU_LABEL_WIDTH - LineWidth(scale, text)) * 0.5f;
     for (cursor = text; *cursor != '\0'; cursor++) {
         int codepoint = (unsigned char)*cursor;
 
-        Stamp(image, scale, pen + 1.0f, baseline, codepoint, 0, 1,
+        Stamp(image, width, scale, pen + 1.0f, baseline, codepoint, 0, 1,
               selected ? 0x58 : 0x30, selected ? 0x08 : 0x30,
               selected ? 0x08 : 0x30);
-        Stamp(image, scale, pen, baseline, codepoint, 0, 0,
+        Stamp(image, width, scale, pen, baseline, codepoint, 0, 0,
               0x08, selected ? 0x00 : 0x08, selected ? 0x00 : 0x08);
         pen += Advance(scale, codepoint);
         if (cursor[1] != '\0') pen += kTracking;
     }
+}
+
+static void Paint(int item, int selected) {
+    float scale = stbtt_ScaleForPixelHeight(&g_font, kPixelHeight);
+    const char *text = kLabels[item];
+
+    PaintText(g_pixels[item][selected], MENU_LABEL_WIDTH, text, selected,
+              ((float)MENU_LABEL_WIDTH - LineWidth(scale, text)) * 0.5f);
     g_ready[item][selected] = 1;
 }
 
@@ -186,4 +196,64 @@ const uint8_t *MenuLabelFontPixels(int item, int selected) {
     selected = selected != 0;
     if (!g_ready[item][selected]) Paint(item, selected);
     return g_pixels[item][selected];
+}
+
+/* Page text: a fixed pool of entries keyed by (text, selected). The strings the
+ * graphics page draws are a small fixed set (row names, value names, notes,
+ * arrows); when more arrive than the pool holds, the oldest entry is reused,
+ * so memory stays bounded. */
+enum {
+    TEXT_POOL_SIZE = 96,
+    TEXT_MAX_WIDTH = 224,
+    TEXT_PAD = 6,
+    TEXT_KEY_SIZE = 40,
+};
+
+typedef struct TextEntry {
+    char text[TEXT_KEY_SIZE];
+    int selected;
+    int width;
+    int used;
+    uint8_t pixels[TEXT_MAX_WIDTH * MENU_LABEL_HEIGHT * 3];
+} TextEntry;
+
+static TextEntry g_textPool[TEXT_POOL_SIZE];
+static int g_textNext;
+
+const uint8_t *MenuFontTextPixels(const char *text, int selected, int *width,
+                                  int *height) {
+    TextEntry *entry;
+    float scale;
+    int index;
+    int span;
+
+    if (text == NULL || text[0] == '\0' || width == NULL || height == NULL) {
+        return NULL;
+    }
+    if (strlen(text) >= TEXT_KEY_SIZE) return NULL;
+    if (!FontReady()) return NULL;
+    selected = selected != 0;
+    for (index = 0; index < TEXT_POOL_SIZE; index++) {
+        entry = &g_textPool[index];
+        if (entry->used && entry->selected == selected &&
+            strcmp(entry->text, text) == 0) {
+            *width = entry->width;
+            *height = MENU_LABEL_HEIGHT;
+            return entry->pixels;
+        }
+    }
+
+    entry = &g_textPool[g_textNext];
+    g_textNext = (g_textNext + 1) % TEXT_POOL_SIZE;
+    scale = stbtt_ScaleForPixelHeight(&g_font, kPixelHeight);
+    span = (int)(LineWidth(scale, text) + 0.999f) + 2 * TEXT_PAD;
+    if (span > TEXT_MAX_WIDTH) span = TEXT_MAX_WIDTH;
+    snprintf(entry->text, sizeof(entry->text), "%s", text);
+    entry->selected = selected;
+    entry->width = span;
+    entry->used = 1;
+    PaintText(entry->pixels, span, text, selected, (float)TEXT_PAD);
+    *width = span;
+    *height = MENU_LABEL_HEIGHT;
+    return entry->pixels;
 }
