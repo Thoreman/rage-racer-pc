@@ -128,6 +128,9 @@ static SDL_GPUTexture *s_eyeFinal[2]; /* after the crack fill */
 /* 4x MSAA colour/depth; colour resolves into s_eyeTarget. */
 static SDL_GPUTexture *s_eyeMsaa[2];
 static SDL_GPUTexture *s_eyeMsaaDepth[2];
+/* Fixed foveation: a Vulkan fragment density map per eye, attached to the
+ * scene target so the edges of each eye shade at a coarser rate. */
+static SDL_GPUTexture *s_eyeFdm[2];
 static int s_eyeMsaaOn;
 static SDL_GPUGraphicsPipeline *s_pipeCrackFill;
 /* XR HUD panel: the 2D HUD layer alone on a transparent background
@@ -369,6 +372,8 @@ static void ModernDestroyResources(void) {
         RAGE_RELEASE(Texture, s_eyeMsaa[1]);
         RAGE_RELEASE(Texture, s_eyeMsaaDepth[0]);
         RAGE_RELEASE(Texture, s_eyeMsaaDepth[1]);
+        RAGE_RELEASE(Texture, s_eyeFdm[0]);
+        RAGE_RELEASE(Texture, s_eyeFdm[1]);
         RAGE_RELEASE(GraphicsPipeline, s_pipeCrackFill);
         RAGE_RELEASE(Texture, s_hudTarget);
         s_eyeW = s_eyeH = 0;
@@ -1697,9 +1702,95 @@ static float ModernXrGradeSetting(const char *key, float minimum,
     return value;
 }
 
-static int ModernEnsureEyeTargets(unsigned w, unsigned h) {
+/* [xr] foveation = off | low | medium | high (default): density falls from full at
+ * inner_radius to min_density at outer_radius (UV units from each eye's view
+ * centre). The GPU shades 1x1, 2x2 or 4x4 pixel blocks (density 1, 0.5,
+ * 0.25), so min 0.5 halves the edge resolution each way. */
+typedef struct {
+    const char *name;
+    float inner, outer, minDensity;
+} ModernFoveationLevel;
+
+static const ModernFoveationLevel s_foveationLevels[] = {
+    {"low", 0.40f, 0.70f, 0.5f},
+    {"medium", 0.30f, 0.60f, 0.5f},
+    {"high", 0.25f, 0.55f, 0.25f},
+};
+
+/* Development aid: adb shell setprop debug.rr.fov 0..3 (off, low, medium,
+ * high) overrides the ini live; the eye targets are rebuilt on a change. */
+static int ModernFoveationOverride(void) {
+    int value = XrDebugProp("fov", -1);
+    return value >= 0 && value <= 3 ? value : -1;
+}
+
+static const ModernFoveationLevel *ModernFoveation(void) {
+    const ModernFoveationLevel *levels = s_foveationLevels;
+    const char *value = RuntimeConfigGet("xr.foveation");
+    int override = ModernFoveationOverride();
+    size_t i;
+    if (override >= 0) return override > 0 ? &levels[override - 1] : NULL;
+    /* Default high: about 1.3 ms of a ~14 ms canyon frame on a Quest 3
+     * (A/B while racing), edges not noticed in play. */
+    if (value == NULL) return &levels[2];
+    for (i = 0; i < SDL_arraysize(s_foveationLevels); i++)
+        if (SDL_strcasecmp(value, levels[i].name) == 0) return &levels[i];
+    if (SDL_strcasecmp(value, "off") != 0)
+        fprintf(stderr, "rage-port: unknown xr.foveation=%s (off, low, "
+                "medium, high)\n", value);
+    return NULL;
+}
+
+/* A density map for one eye, centred where the eye looks straight ahead
+ * (the views are asymmetric: each eye's centre sits towards the nose).
+ * NULL when off or unsupported; the eye then renders at full rate. */
+static SDL_GPUTexture *ModernCreateEyeFdm(unsigned w, unsigned h,
+                                         const PsyzXrView *view) {
+    const ModernFoveationLevel *level = ModernFoveation();
+    SDL_GPUTextureCreateInfo info = {0};
+    SDL_GPUTexture *fdm;
+    float cx = 0.5f, cy = 0.5f;
+    if (level == NULL) return NULL;
+    if (view->tan_right > view->tan_left)
+        cx = -view->tan_left / (view->tan_right - view->tan_left);
+    if (view->tan_up > view->tan_down)
+        cy = view->tan_up / (view->tan_up - view->tan_down);
+    info.type = SDL_GPU_TEXTURETYPE_2D;
+    info.format = SDL_GPU_TEXTUREFORMAT_R8G8_UNORM;
+    info.width = w;
+    info.height = h;
+    info.layer_count_or_depth = 1;
+    info.num_levels = 1;
+    info.props = SDL_CreateProperties();
+    SDL_SetBooleanProperty(info.props, SDL_PROP_GPU_TEXTURE_CREATE_VULKAN_FDM_BOOLEAN, true);
+    SDL_SetFloatProperty(info.props, SDL_PROP_GPU_TEXTURE_CREATE_VULKAN_FDM_CENTER_X_FLOAT, cx);
+    SDL_SetFloatProperty(info.props, SDL_PROP_GPU_TEXTURE_CREATE_VULKAN_FDM_CENTER_Y_FLOAT, cy);
+    SDL_SetFloatProperty(info.props, SDL_PROP_GPU_TEXTURE_CREATE_VULKAN_FDM_INNER_RADIUS_FLOAT, level->inner);
+    SDL_SetFloatProperty(info.props, SDL_PROP_GPU_TEXTURE_CREATE_VULKAN_FDM_OUTER_RADIUS_FLOAT, level->outer);
+    SDL_SetFloatProperty(info.props, SDL_PROP_GPU_TEXTURE_CREATE_VULKAN_FDM_MIN_DENSITY_FLOAT, level->minDensity);
+    fdm = SDL_CreateGPUTexture(s_device, &info);
+    SDL_DestroyProperties(info.props);
+    if (fdm == NULL)
+        fprintf(stderr, "rage-port: XR foveation %s unavailable: %s\n",
+                level->name, SDL_GetError());
+    else
+        fprintf(stderr, "rage-port: XR foveation %s centre %.3f,%.3f\n",
+                level->name, cx, cy);
+    return fdm;
+}
+
+static int ModernEnsureEyeTargets(unsigned w, unsigned h,
+                                  const PsyzXrView *views) {
     int eye;
-    if (s_eyeTarget[0] != NULL && s_eyeW == w && s_eyeH == h) return 1;
+    static int foveationOverride = -1, foveateFillState = -1;
+    int override = ModernFoveationOverride();
+    /* debug.rr.fovfill 0 leaves the crack-fill pass at full rate. */
+    int foveateFill = XrDebugProp("fovfill", 1) != 0;
+    if (s_eyeTarget[0] != NULL && s_eyeW == w && s_eyeH == h &&
+        override == foveationOverride && foveateFill == foveateFillState)
+        return 1;
+    foveationOverride = override;
+    foveateFillState = foveateFill;
     /* xr.msaa (default on) renders eyes 4x multisampled. */
     s_eyeMsaaOn = XrProfileEnabled("xr.msaa") && ModernNativeGpuEyeMsaaReady();
     if (s_pipeCrackFill == NULL) {
@@ -1736,8 +1827,10 @@ static int ModernEnsureEyeTargets(unsigned w, unsigned h) {
         if (s_eyeMsaa[eye]) SDL_ReleaseGPUTexture(s_device, s_eyeMsaa[eye]);
         if (s_eyeMsaaDepth[eye])
             SDL_ReleaseGPUTexture(s_device, s_eyeMsaaDepth[eye]);
+        if (s_eyeFdm[eye]) SDL_ReleaseGPUTexture(s_device, s_eyeFdm[eye]);
         s_eyeTarget[eye] = s_eyeDepth[eye] = s_eyeFinal[eye] = NULL;
         s_eyeMsaa[eye] = s_eyeMsaaDepth[eye] = NULL;
+        s_eyeFdm[eye] = ModernCreateEyeFdm(w, h, &views[eye]);
         info.type = SDL_GPU_TEXTURETYPE_2D;
         info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
         info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
@@ -1746,8 +1839,26 @@ static int ModernEnsureEyeTargets(unsigned w, unsigned h) {
         info.height = h;
         info.layer_count_or_depth = 1;
         info.num_levels = 1;
-        s_eyeTarget[eye] = SDL_CreateGPUTexture(s_device, &info);
+        /* The crack fill's output and the scene target (the MSAA one when
+         * multisampling) both carry the density map. */
+        if (s_eyeFdm[eye] != NULL && foveateFill) {
+            info.props = SDL_CreateProperties();
+            SDL_SetPointerProperty(info.props, SDL_PROP_GPU_TEXTURE_CREATE_VULKAN_FDM_ATTACH_POINTER, s_eyeFdm[eye]);
+        }
         s_eyeFinal[eye] = SDL_CreateGPUTexture(s_device, &info);
+        if (info.props != 0) {
+            SDL_DestroyProperties(info.props);
+            info.props = 0;
+        }
+        if (s_eyeFdm[eye] != NULL && !s_eyeMsaaOn) {
+            info.props = SDL_CreateProperties();
+            SDL_SetPointerProperty(info.props, SDL_PROP_GPU_TEXTURE_CREATE_VULKAN_FDM_ATTACH_POINTER, s_eyeFdm[eye]);
+        }
+        s_eyeTarget[eye] = SDL_CreateGPUTexture(s_device, &info);
+        if (info.props != 0) {
+            SDL_DestroyProperties(info.props);
+            info.props = 0;
+        }
         info.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
         /* Sampled by the crack fill to tell sky from geometry. */
         info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET |
@@ -1760,7 +1871,15 @@ static int ModernEnsureEyeTargets(unsigned w, unsigned h) {
             s_eyeMsaaDepth[eye] = SDL_CreateGPUTexture(s_device, &info);
             info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
             info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+            if (s_eyeFdm[eye] != NULL) {
+                info.props = SDL_CreateProperties();
+                SDL_SetPointerProperty(info.props, SDL_PROP_GPU_TEXTURE_CREATE_VULKAN_FDM_ATTACH_POINTER, s_eyeFdm[eye]);
+            }
             s_eyeMsaa[eye] = SDL_CreateGPUTexture(s_device, &info);
+            if (info.props != 0) {
+                SDL_DestroyProperties(info.props);
+                info.props = 0;
+            }
             if (s_eyeMsaa[eye] == NULL || s_eyeMsaaDepth[eye] == NULL) {
                 fprintf(stderr, "rage-port: XR MSAA targets failed: %s\n",
                         SDL_GetError());
@@ -1832,7 +1951,8 @@ static int ModernPresentXrStereo(const RageSceneSnapshot *snapshot,
         !(g_Camera.mode == CAMERA_VIEW_CAR ||
           (stereoChase && snapshot->sceneId == GAME_SCENE_RACE &&
            g_Camera.mode == (CAMERA_VIEW_CAR ^ 1))) ||
-        !Psyz_XrGetViews(views, &w, &h) || !ModernEnsureEyeTargets(w, h)) {
+        !Psyz_XrGetViews(views, &w, &h) ||
+        !ModernEnsureEyeTargets(w, h, views)) {
         RenderSetOmnidirectionalCulling(0);
         RenderSetOmnidirectionalFacing(0);
         GameRenderWorldSetFullVisibility(0);

@@ -86,6 +86,10 @@ than an uneven higher rate. Anti-aliasing (MSAA) is off by default, which
 keeps heavy scenes near 72 Hz on a stock Quest 3; `msaa = true` smooths
 edges at a large GPU cost (best with a performance tuner or a lower
 `eye_scale`), and `msaa_samples = 4` smooths them further.
+Foveated rendering draws the outer edges of each eye at a lower
+resolution, where the lenses blur them anyway: `foveation = high` (the
+default) saves about 14% of the GPU time; `medium`, `low` and `off` are
+gentler.
 
 If the picture stutters or edges wobble as you turn your head, lower the
 settings. Create `rage-port.ini` in

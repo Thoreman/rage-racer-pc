@@ -72,6 +72,7 @@ and `-DCRACK_DEBUG` (crack fill). **MSL headers were not regenerated** — run
 | `eye_scale` | 1.0 | fraction of runtime-recommended eye resolution (1.2 dropped to ~20 fps) |
 | `refresh_rate` | 72 | Hz; 72 holds solid with ~30% GPU headroom |
 | `world_scale` | 25 | game units per metre of head movement |
+| `foveation` | high | fixed foveated rendering: off/low/medium/high. Vulkan fragment density map per eye (SDL `quest-fdm` branch), on the scene and crack-fill targets, centred on each eye's view axis. Race A/B on Quest 3 (`debug.rr.fov` 0-3, `debug.rr.fovfill` 0/1 switch live): off 15.6 ms, high scene-only 14.3, high scene+fill 13.3; medium ~0.3 (noise). Density texel 16x16 min / 256 max on Quest 3 |
 | `msaa` | false | MSAA on eyes (off by default: ~40% of the GPU in heavy views) |
 | `msaa_samples` | 2 | 2 or 4 samples per pixel (4 costs ~10-15% more GPU) |
 | `max_spot_lights` | 6 | nearest car lamps lighting the scene (~0.2 ms each) |

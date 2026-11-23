@@ -1,5 +1,13 @@
 # Rage Racer on Meta Quest — changelog
 
+## 0.6.3 beta
+
+- Foveated rendering: the outer edges of each eye are drawn at a lower
+  resolution, where the headset's lenses blur them anyway. It saves about
+  14% of the GPU time in the heaviest part of the track, which lifts the
+  frame rate there by around 7 fps. `foveation = off` in `rage-port.ini`
+  turns it off.
+
 ## 0.6.2 beta
 
 - Race speed is now calibrated to the size of the VR world. At console
