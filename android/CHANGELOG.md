@@ -1,5 +1,21 @@
 # Rage Racer on Meta Quest — changelog
 
+## 0.6.2 beta
+
+- Race speed is now calibrated to the size of the VR world. At console
+  speed the car crossed the scenery about twice as fast as its
+  speedometer showed, so races felt far too quick. 100% on the SPEED row
+  now means the speedometer matches what you see (about 0.42x console
+  speed with a USA disc, 0.51x with a European one). The range is 50-150%,
+  and a speed saved by 0.6.0 is reset to 100%.
+- Smoother frame rate on Quest 3: the app gives up two CPU levels (it
+  barely uses the CPU) so the GPU can run one level faster. The heaviest
+  course averages about 64 fps instead of 55-64, and lighter stretches
+  hold 72.
+- If performance is unexpectedly poor, check for headset tuner or
+  optimiser apps: some keep forcing the CPU and GPU to their lowest
+  levels even after being closed.
+
 ## 0.6.0 beta (first public build)
 
 The first build meant for other people. Tested on a Quest 3 only.
@@ -25,8 +41,8 @@ The first build meant for other people. Tested on a Quest 3 only.
 - Controller vibration for collisions, slides and road surface, with an
   on/off switch on the pause menu.
 - The pause menu lists the controls.
-- Race speed setting on the pause menu, 50-150%. 100% (the default) is
-  calibrated so the speedometer matches what you see in VR. The game keeps exact console timing even when
+- Race speed setting on the pause menu, 50-100% of console speed, 60% by
+  default for comfort in VR. The game keeps exact console timing even when
   the headset drops frames.
 
 **Picture**

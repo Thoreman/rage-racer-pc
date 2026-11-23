@@ -27,7 +27,7 @@ android {
         minSdkVersion 32
         targetSdkVersion 32
         versionCode 85
-        versionName "0.6.2-trade2"
+        versionName "0.6.2-beta"
         manifestPlaceholders = [
             appIcon: localIcon ? "@mipmap/ic_launcher_local"
                                : "@mipmap/ic_launcher"
