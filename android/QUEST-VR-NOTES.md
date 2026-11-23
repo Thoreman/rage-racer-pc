@@ -90,8 +90,13 @@ Headset tuner / optimiser apps set `debug.oculus.*` properties (refresh
 rate, CPU/GPU level, texture size) that override the app, and some keep
 doing so while "off". Check `adb shell getprop | grep debug.oculus` before
 profiling: a forced GPU level of 0 makes the game crawl, 7 overclocks it.
-Without one, a Quest 3 grants this app GPU level 5 (manifest CPU-for-GPU
-trade).
+`com.threethan.tuner` left both `debug.oculus.cpuLevel` and `gpuLevel` at 0
+after being closed, forcing the lowest clocks (likely the old unexplained
+18 fps state); clear with `setprop debug.oculus.gpuLevel ''` (and cpuLevel).
+Without one, a Quest 3 grants this app GPU level 6 (manifest CPU-for-GPU
+trade of 2; CPU capped at level 2, which it barely uses). Check with
+`setprop debug.oculus.clockStateLogLevel 1` and logcat `crcs` (`Max [...]`,
+`Final Level`); set it back to 0 after.
 
 ## What works
 

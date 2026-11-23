@@ -37,10 +37,12 @@
 
         <meta-data android:name="com.oculus.supportedDevices" android:value="quest2|questpro|quest3|quest3s" />
         <meta-data android:name="com.oculus.vr.focusaware" android:value="true" />
-        <!-- Quest 3/3S: trade one CPU level for one GPU level. The game is
-             GPU bound with the CPU mostly idle; without this a stock Quest 3
-             holds the GPU at level 4 (545 MHz), with it level 5 is allowed. -->
-        <meta-data android:name="com.oculus.trade_cpu_for_gpu_amount" android:value="1" />
+        <!-- Quest 3/3S: trade two CPU levels for two GPU levels. The game is
+             GPU bound with the CPU mostly idle (15-25% busy at CPU level 2);
+             without this a stock Quest 3 holds the GPU at level 4 (545 MHz),
+             with it level 6 (640 MHz) is allowed: canyon race 55-64 -> ~64 fps
+             average, light stretches a locked 72. -->
+        <meta-data android:name="com.oculus.trade_cpu_for_gpu_amount" android:value="2" />
 
         <activity android:name=".RageRacerActivity"
             android:label="@string/app_name"
