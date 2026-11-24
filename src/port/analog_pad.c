@@ -15,6 +15,7 @@
 #include "force_feedback_device.h"
 #include "input_device_select.h"
 #include "runtime_config.h"
+#include "xr_profile.h"
 
 /*
  * Analog gamepad support, presented to the game as a NeGcon.
@@ -165,7 +166,7 @@ static SDL_Gamepad *AnalogFindGamepad(void) {
         int axis;
         int button;
         if (candidate == NULL) continue;
-#ifdef __ANDROID__
+#if RAGE_XR_BUILD
         /* Quest: the Touch controllers are the virtual pad. Android also
          * lists a second, motorless device that otherwise wins the activity
          * tie and swallows the rumble. */
@@ -202,19 +203,20 @@ static int s_lookBehindHeld;
 
 int PortLookBehindHeld(void) { return s_lookBehindHeld; }
 
-#ifdef __ANDROID__
+#if RAGE_XR_BUILD
 /* Quest: the grips are the gear paddles ([xr] grip_shift, default on). */
 static int GripShiftEnabled(void) {
     static int gripShift = -1;
     if (gripShift < 0)
-        gripShift = RuntimeConfigGet("xr.grip_shift") == NULL ||
-                    RuntimeConfigEnabled("xr.grip_shift");
+        gripShift = PortXrAvailable() &&
+                    (RuntimeConfigGet("xr.grip_shift") == NULL ||
+                     RuntimeConfigEnabled("xr.grip_shift"));
     return gripShift;
 }
 #endif
 
 int PortOwnsLookBehind(void) {
-#ifdef __ANDROID__
+#if RAGE_XR_BUILD
     /* Most NeGcon presets put shift up on d-pad down, which retail also
      * reads as look-behind in the chase view; A is the look-behind button. */
     return GripShiftEnabled();
@@ -242,7 +244,7 @@ static unsigned int GamepadButtons(SDL_Gamepad *pad, unsigned int held) {
         held |= PAD_CIRCLE;
     if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH))
         held |= PAD_TRIANGLE;
-#ifdef __ANDROID__
+#if RAGE_XR_BUILD
     /* Quest: the grips are the gear paddles, left down and right up,
      * whichever NeGcon button preset is selected in OPTIONS. The live
      * mapping keeps the NeGcon row after the pad's eight masks; slots 4 and
@@ -475,7 +477,7 @@ void PortSampleAnalogPad(void) {
 /* Control reminders shown under the pause menu. Only the Quest build has a
  * fixed layout worth describing; elsewhere the player's own pad applies. */
 int PortPauseHints(const char *const **lines) {
-#ifdef __ANDROID__
+#if RAGE_XR_BUILD
     static const char *const hints[] = {
         "R TRIGGER GAS",
         "L TRIGGER BRAKE",
@@ -485,8 +487,12 @@ int PortPauseHints(const char *const **lines) {
         "STICK CLICK HUD ON OFF",
         "HOLD X RECENTRE",
     };
-    if (lines != NULL) *lines = hints;
-    return (int)(sizeof(hints) / sizeof(hints[0]));
+    if (PortXrAvailable()) {
+        if (lines != NULL) *lines = hints;
+        return (int)(sizeof(hints) / sizeof(hints[0]));
+    }
+    if (lines != NULL) *lines = NULL;
+    return 0;
 #else
     if (lines != NULL) *lines = NULL;
     return 0;

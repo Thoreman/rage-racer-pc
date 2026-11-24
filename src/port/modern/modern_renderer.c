@@ -1835,9 +1835,24 @@ static SDL_GPUTexture *ModernCreateEyeFdm(unsigned w, unsigned h,
     return fdm;
 }
 
+/* XR set-up timing: one line for a step that held the main thread for 20 ms
+ * or more (a dropped headset frame or two). Each step runs once per build,
+ * so this never repeats per frame. */
+static double ModernXrMsSince(Uint64 start) {
+    return (double)(SDL_GetPerformanceCounter() - start) * 1000.0 /
+           (double)SDL_GetPerformanceFrequency();
+}
+
+static void ModernXrStepTime(const char *step, Uint64 start) {
+    double ms = ModernXrMsSince(start);
+    if (ms >= 20.0)
+        fprintf(stderr, "rage-port: XR setup %s took %.1f ms\n", step, ms);
+}
+
 static int ModernEnsureEyeTargets(unsigned w, unsigned h,
                                   const PsyzXrView *views) {
     int eye;
+    Uint64 stepStart, buildStart;
     static const ModernFoveationLevel *foveationBuilt;
     static int foveateFillState = -1, msaaBuilt = -1;
     /* The foveation level (debug.rr.fov override included), MSAA on/off and
@@ -1856,9 +1871,12 @@ static int ModernEnsureEyeTargets(unsigned w, unsigned h,
     foveationBuilt = foveation;
     msaaBuilt = msaaWanted;
     foveateFillState = foveateFill;
+    buildStart = stepStart = SDL_GetPerformanceCounter();
     /* xr.msaa renders eyes multisampled (xr.msaa_samples); a sample count
      * change rebuilds the MSAA pipelines inside EyeMsaaReady. */
     s_eyeMsaaOn = msaaWanted != 0 && ModernNativeGpuEyeMsaaReady();
+    ModernXrStepTime("MSAA pipelines", stepStart);
+    stepStart = SDL_GetPerformanceCounter();
     /* The crack fill reads depth without MSAA and resolved alpha coverage
      * with it: a different shader, so rebuild it when MSAA flips. */
     if (s_pipeCrackFill != NULL && s_pipeCrackFillMsaa != s_eyeMsaaOn) {
@@ -1892,6 +1910,8 @@ static int ModernEnsureEyeTargets(unsigned w, unsigned h,
             fprintf(stderr, "rage-port: XR crack-fill pipeline failed: %s\n",
                     SDL_GetError());
     }
+    ModernXrStepTime("crack-fill pipeline", stepStart);
+    stepStart = SDL_GetPerformanceCounter();
     for (eye = 0; eye < 2; eye++) {
         SDL_GPUTextureCreateInfo info = {0};
         if (s_eyeTarget[eye]) SDL_ReleaseGPUTexture(s_device, s_eyeTarget[eye]);
@@ -1970,12 +1990,53 @@ static int ModernEnsureEyeTargets(unsigned w, unsigned h,
     }
     s_eyeW = w;
     s_eyeH = h;
-    fprintf(stderr, "rage-port: XR stereo eye targets %ux%u msaa=%s\n", w, h,
+    ModernXrStepTime("eye textures + density maps", stepStart);
+    fprintf(stderr, "rage-port: XR stereo eye targets %ux%u msaa=%s "
+            "(built in %.1f ms)\n", w, h,
             !s_eyeMsaaOn ? "off"
             : ModernNativeGpuEyeSampleCount() == SDL_GPU_SAMPLECOUNT_2 ? "2x"
-                                                                      : "4x");
+                                                                      : "4x",
+            ModernXrMsSince(buildStart));
     return 1;
 }
+
+#if RAGE_PC_XR
+/* PC VR: build everything the first stereo frame would otherwise create on
+ * the spot (modern resources and native GPU pipelines, eye swapchains, eye
+ * targets, MSAA and crack-fill pipelines, the HUD texture and swapchain)
+ * while the headset shows the flat menu screen. On an integrated GPU that
+ * first frame held the main thread long enough to break up the race-start
+ * audio. Nothing is drawn or submitted here; a settings change from the VR
+ * graphics menu is rebuilt on the next menu frame the same way. Cheap once
+ * built: every step returns at once when nothing changed. */
+static void ModernXrPrewarm(void) {
+    static int logged;
+    PsyzXrView views[2];
+    unsigned w = 0, h = 0;
+    Uint64 start;
+    if (!s_enabled || !Psyz_XrPresenting()) return;
+    start = SDL_GetPerformanceCounter();
+    if (!ModernEnsureResources()) return;
+    ModernXrStepTime("modern resources", start);
+    if (!Psyz_XrGetViews(views, &w, &h) || !ModernEnsureEyeTargets(w, h, views))
+        return;
+    if (!ModernEnsureHudTarget()) return;
+    if (!Psyz_XrPrepareStereo((unsigned)s_targetW, (unsigned)s_targetH))
+        return;
+    if (!logged) {
+        logged = 1;
+        fprintf(stderr, "rage-port: XR stereo pre-warmed on the menu screen "
+                "(%.1f ms)\n", ModernXrMsSince(start));
+    }
+}
+#endif
+
+#if RAGE_PC_XR
+/* Stereo start-up upload (see ModernPresentXrStereo). */
+static int s_xrStereoRunning, s_xrWarmActive, s_xrTimeNextFrame;
+static unsigned s_xrWarmFrames, s_xrWarmLoaded;
+static Uint64 s_xrWarmStart;
+#endif
 
 static unsigned s_xrFpsWindowStart, s_xrFpsFrames;
 static int s_xrMeasuredFps;
@@ -2057,8 +2118,22 @@ static int ModernPresentXrStereo(const RageSceneSnapshot *snapshot,
         RenderSetOmnidirectionalCulling(0);
         RenderSetOmnidirectionalFacing(0);
         GameRenderWorldSetFullVisibility(0);
+#if RAGE_PC_XR
+        s_xrStereoRunning = 0;
+#endif
         return 0;
     }
+#if RAGE_PC_XR
+    if (!s_xrStereoRunning) {
+        /* Stereo (re)starts: the race start, or back from a flat camera.
+         * Upload what the first frame needs before drawing it. */
+        s_xrStereoRunning = 1;
+        s_xrWarmActive = 1;
+        s_xrWarmFrames = 0;
+        s_xrWarmLoaded = 0;
+        s_xrWarmStart = SDL_GetPerformanceCounter();
+    }
+#endif
     /* Takes effect from the next published world (one logic frame). */
     GameRenderWorldSetFullVisibility(fullVisibility);
     if (!loggedScale) {
@@ -2088,7 +2163,7 @@ static int ModernPresentXrStereo(const RageSceneSnapshot *snapshot,
         ModernPresentationClockObserveFrame(&s_presentationClock,
                                             target->frameCounter, now);
         fraction = ModernPresentationClockFraction(&s_presentationClock, now);
-#ifdef __ANDROID__
+#if RAGE_XR_BUILD
         /* The observed clock times each tick from whenever an eye frame
          * first sees it and takes the last gap as the tick length; with
          * uneven XR frames that swings every tick and near scenery judders.
@@ -2116,6 +2191,37 @@ static int ModernPresentXrStereo(const RageSceneSnapshot *snapshot,
     RenderSetOmnidirectionalCulling(1);
     RenderSetOmnidirectionalFacing(terrainFacing);
     ModernNativeGpuPrepare(ModernSkyOnlyWorld(world), (float)w / (float)h);
+#if RAGE_PC_XR
+    if (s_xrWarmActive) {
+        /* PC VR: the first race frame used to load every visible texture
+         * and mesh buffer at once (~230 ms on an integrated GPU), stopping
+         * the XR frame stream at the countdown; a streaming runtime's
+         * audio broke up with it. Upload them a few ms per XR frame
+         * instead, repeating the last image meanwhile (the countdown keeps
+         * running underneath; at most ~1.3 s). */
+        unsigned loaded = 0;
+        int pending;
+        cmd = SDL_AcquireGPUCommandBuffer(s_device);
+        if (cmd == NULL) return 0;
+        pending = ModernNativeGpuWarmStep(cmd, 6000000u, &loaded);
+        if (!SDL_SubmitGPUCommandBuffer(cmd)) pending = 0;
+        ModernNativeGpuSubmitted();
+        s_xrWarmLoaded += loaded;
+        s_xrWarmFrames++;
+        if (pending && s_xrWarmFrames < 96) {
+            info->skip_present = true;
+            return 1;
+        }
+        s_xrWarmActive = 0;
+        if (s_xrWarmLoaded != 0 || s_xrWarmFrames > 1)
+            fprintf(stderr, "rage-port: XR stereo warm-up uploaded %u "
+                    "textures over %u frames (%.1f ms)%s\n", s_xrWarmLoaded,
+                    s_xrWarmFrames, ModernXrMsSince(s_xrWarmStart),
+                    pending ? ", gave up waiting" : "");
+        s_xrTimeNextFrame = 1;
+    }
+    Uint64 xrStepHud = SDL_GetPerformanceCounter();
+#endif
     /* The game's 2D HUD (speed, laps, times) is drawn on its own into a
      * transparent texture and shown as a floating panel by psyz. The VRAM
      * snapshot may submit work of its own, so take it before recording. */
@@ -2132,6 +2238,9 @@ static int ModernPresentXrStereo(const RageSceneSnapshot *snapshot,
             hud = 1;
         }
     }
+#if RAGE_PC_XR
+    Uint64 xrStepDraw = SDL_GetPerformanceCounter();
+#endif
     cmd = SDL_AcquireGPUCommandBuffer(s_device);
     if (cmd == NULL) return 0;
     if (hud && !ModernUploadOverlay(cmd)) hud = 0;
@@ -2254,6 +2363,17 @@ static int ModernPresentXrStereo(const RageSceneSnapshot *snapshot,
         return 0;
     }
     ModernNativeGpuSubmitted();
+#if RAGE_PC_XR
+    if (s_xrTimeNextFrame) {
+        /* Where the first drawn stereo frame's time went. */
+        s_xrTimeNextFrame = 0;
+        fprintf(stderr, "rage-port: XR first stereo frame: HUD %.1f ms, "
+                "draw+submit %.1f ms\n",
+                (double)(xrStepDraw - xrStepHud) * 1000.0 /
+                    (double)SDL_GetPerformanceFrequency(),
+                ModernXrMsSince(xrStepDraw));
+    }
+#endif
     ModernXrCountFrame();
     info->texture = NULL;
     info->hud = hud ? s_hudTarget : NULL;
@@ -2406,19 +2526,48 @@ static void ModernPresentSource(PsyzPresentSourceInfo *info) {
         if (s_config.modernTextureFilterLinear) {
             info->filter = SDL_GPU_FILTER_LINEAR;
         }
+#if RAGE_PC_XR
+        ModernXrPrewarm();
+#endif
         ModernFmvZoomPresent(s_device, s_window, info);
         return;
     }
     if (snapshot->displayHeight != 0 && snapshot->displayHeight != 240) {
         if (s_markerCaptureEnabled) ModernMarkerCheck(snapshot, 0);
         ModernPresentationClockReset(&s_presentationClock);
+#if RAGE_PC_XR
+        ModernXrPrewarm();
+#endif
         return;
     }
     /* A renderer toggle can expose the last modern-only capture. Wait for a
      * complete classic stream instead of displaying its HUD without geometry. */
     if (!s_enabled && CaptureClassicSources(snapshot) == NULL) return;
     if (!ModernEnsureResources()) { info->skip_present = true; return; }
+#if RAGE_PC_XR
+    {
+        /* A stereo frame that held the main thread for 25 ms or more: one
+         * line, at most once a second, with how far into stereo it was. */
+        static unsigned stereoFrames;
+        static Uint64 lastReport;
+        Uint64 start = SDL_GetPerformanceCounter();
+        if (ModernPresentXrStereo(snapshot, fpsMode, info)) {
+            double ms = ModernXrMsSince(start);
+            Uint64 now = SDL_GetPerformanceCounter();
+            stereoFrames++;
+            if (ms >= 25.0 &&
+                (lastReport == 0 ||
+                 now - lastReport >= SDL_GetPerformanceFrequency())) {
+                fprintf(stderr, "rage-port: XR stereo frame %u took %.1f ms "
+                        "on the main thread\n", stereoFrames, ms);
+                lastReport = now;
+            }
+            return;
+        }
+    }
+#else
     if (ModernPresentXrStereo(snapshot, fpsMode, info)) return;
+#endif
 
     if (fpsMode) {
         const RageSceneSnapshot *target = CaptureCurrent();
@@ -2509,7 +2658,7 @@ void ModernFrameWaitTick(int frameLimit) {
      * and the measured spacing between slots. */
     static Uint64 s_lastSlotNs;
     static double s_slotUs;
-#ifdef __ANDROID__
+#if RAGE_XR_BUILD
     /* debug.rr.guard: 2 = don't start an XR frame whose display slot would
      * fall after this tick's deadline (such a frame is clamped to the end of
      * the tick, so the next one jumps). 1 = the old duration-based guard,

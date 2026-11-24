@@ -12,6 +12,10 @@
   sounds went over the maximum volume and were cut off harshly. The mix
   is now limited smoothly instead (`[audio] limiter = false` in
   `rage-port.ini` restores the old behaviour).
+- First PC VR build for Windows (CMake `-DRAGE_PC_XR=ON`): plays in a
+  headset through OpenXR (tested with a Quest 3 over Virtual Desktop) and
+  runs as the normal flat game when no headset is found. Known issue:
+  occasional audio clicks on weaker PCs in VR when the system stalls.
 
 ## 0.6.4 beta
 

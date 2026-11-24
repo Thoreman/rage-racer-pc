@@ -139,3 +139,7 @@ else()
 endif()
 add_test(NAME force_feedback_device COMMAND force_feedback_device_tests)
 set_tests_properties(force_feedback_device PROPERTIES LABELS unit)
+
+if(RAGE_PC_XR)
+    rage_flat_target(force_feedback_device_tests)
+endif()

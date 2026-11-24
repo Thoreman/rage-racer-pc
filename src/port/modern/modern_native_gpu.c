@@ -2790,6 +2790,46 @@ void ModernNativeGpuDraw(SDL_GPUCommandBuffer *command,
     ModernNativeWarmTrackBank(command);
 }
 
+int ModernNativeGpuWarmStep(SDL_GPUCommandBuffer *command, Uint64 budgetNs,
+                            unsigned *loaded) {
+    Uint64 start = SDL_GetTicksNS();
+    int pending = 0;
+    if (loaded) *loaded = 0;
+    if (s_world == NULL || !s_world->hasCamera) return 0;
+    for (unsigned view = 0; view < 2; ++view) {
+        const RageNativeDrawSpan *spans = view ? s_mirrorSpans : s_spans;
+        uint32_t count = view ? s_mirrorSpanCount : s_spanCount;
+        for (uint32_t i = 0; i < count; ++i) {
+            const RageNativeDrawSpan *span = &spans[i];
+            int textureMissing = span->material != UINT32_MAX &&
+                                 ModernNativeFindTexture(span) == NULL;
+            int geometryMissing = 0;
+            if (s_residentGeometryEnabled && span->localGeometry != NULL &&
+                span->localGeometry->vertexCount != 0) {
+                const ModernResidentGeometry *entry = s_residentGeometry;
+                while (entry != NULL && entry->source != span->localGeometry)
+                    entry = entry->next;
+                geometryMissing = entry == NULL &&
+                    s_residentGeometryCount < s_residentGeometryLimit;
+            }
+            if (!textureMissing && !geometryMissing) continue;
+            /* Out of time or upload slots: the rest waits for the next
+             * frame (uploads retire when this command buffer is submitted). */
+            if (SDL_GetTicksNS() - start >= budgetNs ||
+                !ModernUploadQueueHasRoom(&s_pendingUploads)) {
+                pending = 1;
+                continue;
+            }
+            if (textureMissing &&
+                ModernNativeLoadTexture(command, span) != NULL && loaded)
+                ++*loaded;
+            if (geometryMissing)
+                (void)ModernNativeResidentBuffer(command, span->localGeometry);
+        }
+    }
+    return pending;
+}
+
 void ModernNativeGpuDrawStereo(SDL_GPUCommandBuffer *command,
                                SDL_GPUTexture *const colorTargets[2],
                                SDL_GPUTexture *const depthTargets[2],

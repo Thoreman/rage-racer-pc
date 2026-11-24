@@ -330,12 +330,66 @@ static int HostOpenDataTrack(const char *path) {
     return 0;
 }
 
+/* A CUE next to the chosen BIN that names it as the data track. */
+static int HostCueOwnsBin(void *context, const char *path) {
+    char dataTrackPath[PATH_MAX];
+    long offset = 0;
+
+    return DiscPathIsCue(path) &&
+           DiscCueResolveDataTrack(path, dataTrackPath, sizeof(dataTrackPath),
+                                   &offset) &&
+           offset == 0 && DiscPathsReferToSameFile(dataTrackPath, context);
+}
+
+/* "Track 01.bin" of a split (Redump-style) image holds only the data track;
+ * the CD-DA race music lives in its sibling Track NN files, which only the
+ * CUE ties together. Mounting the BIN alone gives a one-track TOC, so every
+ * race-music CdlPlay lands on no track and stays silent. Prefer the CUE that
+ * owns the BIN whenever one sits beside it. */
+static int HostFindCueForBin(const char *binPath, char *cuePath,
+                             size_t cuePathSize) {
+    char directory[PATH_MAX];
+    const char *slash = strrchr(binPath, '/');
+    const char *backslash = strrchr(binPath, '\\');
+    size_t length;
+
+    if (backslash != NULL && (slash == NULL || backslash > slash))
+        slash = backslash;
+    if (slash == NULL) {
+        snprintf(directory, sizeof(directory), "%s", ".");
+    } else {
+        length = (size_t)(slash - binPath);
+        if (length == 0) length = 1; /* root directory */
+        if (length >= sizeof(directory)) return 0;
+        memcpy(directory, binPath, length);
+        directory[length] = '\0';
+    }
+    if (!DiscDiscoverImage(directory, cuePath, cuePathSize, HostCueOwnsBin,
+                           (void *)binPath)) {
+        return 0;
+    }
+    /* Discovery joins with the platform separator; keep the BIN path's own,
+     * because psyz finds the CUE's directory at its last '/' when the path
+     * has any, and a mixed "C:/disc\x.cue" would lose a directory level. */
+    if (slash != NULL && strlen(cuePath) > strlen(directory))
+        cuePath[strlen(directory)] = *slash;
+    return 1;
+}
+
 /* Resolves a selected image all the way to a readable archive, so a path that
  * no longer works is reported before the game starts loading assets. */
 static int HostOpenDiscImage(const char *discPath) {
     char dataTrackPath[PATH_MAX];
+    char cuePath[PATH_MAX];
 
     HostResetCdBackend();
+    if (DiscPathIsBin(discPath) &&
+        HostFindCueForBin(discPath, cuePath, sizeof(cuePath))) {
+        fprintf(stderr, "rage-port: %s belongs to %s; mounting the CUE so "
+                        "CD audio tracks are available\n",
+                discPath, cuePath);
+        discPath = cuePath;
+    }
     if (DiscPathIsChd(discPath)) {
         int written;
 

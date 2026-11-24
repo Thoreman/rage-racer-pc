@@ -7,6 +7,10 @@
 #endif
 #include <psyz/audio.h>
 #include <libetc.h>
+#ifdef RAGE_PC_XR
+#include <SDL3/SDL.h>
+#include <string.h>
+#endif
 
 #include <limits.h>
 #include <stdio.h>
@@ -90,11 +94,41 @@ int main(int argc, char **argv) {
     AndroidBootstrap();
 #endif
     if (!RuntimeConfigInit(argc, argv)) return EXIT_FAILURE;
-#ifdef __ANDROID__
+#ifdef RAGE_PC_XR
+    /* PC VR is tried unless: a headless/automated run (PSYZ_HEADLESS), a
+     * tool invocation (the launcher's archive dump etc. must not wake the
+     * headset), or [xr] enabled = false / PSYZ_XR=0. psyz then presents to
+     * a window as the flat build does. */
+    {
+        static const char *const toolKeys[] = {
+            "tools.car_raw", "tools.track_export", "tools.dump_archive",
+            "tools.car_catalog", "tools.car_export",
+        };
+        const char *headless = SDL_getenv("PSYZ_HEADLESS");
+        const char *enabled = RuntimeConfigGet("xr.enabled");
+        int off = (headless != NULL && *headless && strcmp(headless, "0") != 0) ||
+                  (enabled != NULL && !RuntimeConfigEnabled("xr.enabled"));
+        size_t k;
+        for (k = 0; k < sizeof(toolKeys) / sizeof(toolKeys[0]); k++)
+            if (RuntimeConfigGet(toolKeys[k]) != NULL) off = 1;
+        /* No headset answering the probe: don't try OpenXR again at video
+         * start. */
+        if (off || !PortXrAvailable())
+            SDL_SetEnvironmentVariable(SDL_GetEnvironment(), "PSYZ_XR", "0",
+                                       true);
+    }
+#endif
+#if defined(__ANDROID__) || defined(RAGE_PC_XR)
     /* The XR platform layer starts before the renderer and reads these from
      * the environment: [xr] eye_scale (fraction of the runtime's recommended
      * eye resolution) and refresh_rate (Hz). */
     /* SDL_getenv reads SDL's own environment snapshot, so set them there. */
+#ifdef RAGE_PC_XR
+    /* PC: only when a headset answered the probe; otherwise flat as usual. */
+    if (PortXrAvailable()) {
+#else
+    {
+#endif
     if (PortXrAvailable()) XrProfileGraphicsStart();
     /* Unset values come from the headset's profile (xr_profile.c). */
     SDL_SetEnvironmentVariable(SDL_GetEnvironment(), "PSYZ_XR_EYE_SCALE",
@@ -126,6 +160,7 @@ int main(int argc, char **argv) {
                 SDL_SetEnvironmentVariable(SDL_GetEnvironment(), hudKeys[i][1],
                                            RuntimeConfigGet(hudKeys[i][0]),
                                            true);
+    }
     }
 #endif
     /* The race music is full-scale CD audio and the countdown adds loud

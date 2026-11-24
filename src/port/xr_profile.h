@@ -36,6 +36,17 @@ const char *XrProfileName(void);
 #include <stdlib.h>
 #include <string.h>
 #include <sys/system_properties.h>
+#elif defined(RAGE_PC_XR)
+#include <stdlib.h>
+#include <string.h>
+#endif
+
+/* Compile-time: this build carries the VR code paths (Quest, or PC VR).
+ * At run time, PortXrAvailable() says whether a headset is in use. */
+#if defined(__ANDROID__) || defined(RAGE_PC_XR)
+#define RAGE_XR_BUILD 1
+#else
+#define RAGE_XR_BUILD 0
 #endif
 
 static inline int XrDebugProp(const char *name, int fallback) {
@@ -58,6 +69,30 @@ static inline int XrDebugProp(const char *name, int fallback) {
             cache[i].ticks = 100;
         }
         return cache[i].value;
+    }
+#elif defined(RAGE_PC_XR)
+    /* PC VR: environment variable RAGE_DEBUG_<NAME> (upper-cased), read
+     * once per name. */
+    enum { SLOTS = 16 };
+    static struct {
+        const char *name;
+        int value;
+    } cache[SLOTS];
+    int i;
+    for (i = 0; i < SLOTS; i++) {
+        if (cache[i].name == NULL) {
+            char key[64] = "RAGE_DEBUG_";
+            size_t at = strlen(key);
+            const char *p;
+            const char *text;
+            for (p = name; *p && at + 1 < sizeof(key); p++)
+                key[at++] = (char)((*p >= 'a' && *p <= 'z') ? *p - 32 : *p);
+            key[at] = '\0';
+            text = getenv(key);
+            cache[i].name = name;
+            cache[i].value = text != NULL && *text ? atoi(text) : fallback;
+        }
+        if (cache[i].name == name) return cache[i].value;
     }
 #endif
     (void)name;

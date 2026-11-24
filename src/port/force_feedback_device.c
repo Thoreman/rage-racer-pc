@@ -10,6 +10,7 @@
 #include "force_feedback.h"
 #include "platform_paths.h"
 #include "runtime_config.h"
+#include "xr_profile.h"
 #include "game/car.h"
 #include "game/player_car_internal.h"
 #include "game/race.h"
@@ -398,8 +399,8 @@ int PortAdjustForceFeedbackGain(int direction) {
     int next;
 
     LoadSettings();
-#ifdef __ANDROID__
-    return 0; /* Quest shows only on/off. */
+#if RAGE_XR_BUILD
+    if (PortXrAvailable()) return 0; /* VR shows only on/off. */
 #endif
     if (!s_enabled || direction == 0) return 0;
     next = s_gainPercent + (direction < 0 ? -FFB_GAIN_STEP : FFB_GAIN_STEP);
@@ -414,10 +415,12 @@ int PortAdjustForceFeedbackGain(int direction) {
 void PortForceFeedbackLabel(char *text, size_t size) {
     if (text == NULL || size == 0) return;
     LoadSettings();
-#ifdef __ANDROID__
+#if RAGE_XR_BUILD
     /* Quest: controller vibration, simply on or off. */
-    snprintf(text, size, s_enabled ? "VIBRATE ON" : "VIBRATE OFF");
-    return;
+    if (PortXrAvailable()) {
+        snprintf(text, size, s_enabled ? "VIBRATE ON" : "VIBRATE OFF");
+        return;
+    }
 #endif
     if (!s_enabled) {
         snprintf(text, size, "FFB OFF");

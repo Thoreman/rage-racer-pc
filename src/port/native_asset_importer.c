@@ -25,6 +25,14 @@
 #include "game/track.h"
 #include "game/track_internal.h"
 #include "render/car_paint.h"
+#if RAGE_PC_XR
+#include <psyz/xr.h>
+/* PC VR: race loading imports several meshes back to back; keep the XR
+ * frame stream going between them (see Psyz_XrKeepAlive). */
+#define IMPORT_XR_KEEP_ALIVE() ((void)Psyz_XrKeepAlive())
+#else
+#define IMPORT_XR_KEEP_ALIVE() ((void)0)
+#endif
 
 enum {
     /* The retail archive exposes 130 renderer asset/set pairs. Keep room for
@@ -130,6 +138,7 @@ static int ImportVisitModelBank(const NativeModelBank *bank,
     if (bank == NULL || bank->modelCount <= 0 || bank->table == NULL) return 0;
     *meshCount = (uint32_t)bank->modelCount;
     for (mesh = 0; mesh < *meshCount; mesh++) {
+        IMPORT_XR_KEEP_ALIVE();
         if (bank->models[mesh] == NULL ||
             !ImportVisitModelStream(mesh, bank->models[mesh], bank->table,
                                         bank->normals, visitor, context))
@@ -188,6 +197,7 @@ static int ImportVisitCourseBank(RageImportedFaceVisitor visitor,
     *meshCount = (uint32_t)g_CourseModelCount;
     for (mesh = 0; mesh < *meshCount; mesh++) {
         const NativeCourseModel *model = &g_NativeCourseModels[mesh];
+        IMPORT_XR_KEEP_ALIVE();
         if (model->geometry == NULL || model->model == NULL ||
             !ImportVisitCourseStream(mesh, model->model, model->geometry,
                                          visitor, context)) return 0;
@@ -203,6 +213,7 @@ static int ImportVisitTerrainBank(RageImportedFaceVisitor visitor,
         g_RenderState.geometry.cellTable == NULL) return 0;
     *meshCount = (uint32_t)g_TerrainCellCount;
     for (mesh = 0; mesh < *meshCount; mesh++) {
+        IMPORT_XR_KEEP_ALIVE();
         if (g_NativeTerrainCells[mesh] == NULL ||
             !ImportVisitTerrainStream(mesh, g_NativeTerrainCells[mesh],
                                           vertices, visitor, context))
@@ -748,7 +759,9 @@ const RageRuntimeCachedMesh *NativeAssetImporterFind(
     if (!s_ready || instance == NULL) return NULL;
     entry = ImportFindEntry(instance->assetKey, instance->assetSet);
     if (entry != NULL) return &entry->cached;
+    IMPORT_XR_KEEP_ALIVE();
     entry = ImportBuildMesh(instance);
+    IMPORT_XR_KEEP_ALIVE();
     if (entry == NULL) return NULL;
     s_entryCount++;
     fprintf(stderr,

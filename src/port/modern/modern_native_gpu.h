@@ -57,6 +57,12 @@ void ModernNativeGpuDrawStereo(SDL_GPUCommandBuffer *command,
                                SDL_GPUTexture *const resolveTargets[2],
                                const ModernNativeEyeView eyes[2],
                                float worldScale, int targetHeight);
+/* Uploads textures and resident geometry the prepared world (main and
+ * mirror views) needs but does not have yet, stopping after budgetNs or
+ * when the upload queue is full. Returns 1 while some remain. Submit the
+ * command buffer and call ModernNativeGpuSubmitted before the next step. */
+int ModernNativeGpuWarmStep(SDL_GPUCommandBuffer *command, Uint64 budgetNs,
+                            unsigned *loaded);
 /* Builds the 4x MSAA eye pipelines on first call; 0 if unavailable. */
 int ModernNativeGpuEyeMsaaReady(void);
 /* Sample count of the XR MSAA eye targets and pipelines ([xr] msaa_samples). */

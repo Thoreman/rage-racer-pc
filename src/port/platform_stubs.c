@@ -146,7 +146,7 @@ enum {
 };
 static int s_gameSpeedPercent = -1;
 
-#ifdef __ANDROID__
+#if RAGE_XR_BUILD
 /* Fraction of console speed at which the speedometer is true in VR.
  * Measured on the PC build (accelerator held, straight road): the player
  * moves 0.075 world units per logic tick per unit of internal speed (rivals
@@ -190,7 +190,11 @@ static void LoadGameSpeed(void) {
 
     if (s_gameSpeedPercent >= 0) return;
     s_gameSpeedPercent = GAME_SPEED_MAX;
-#ifdef __ANDROID__
+#if RAGE_XR_BUILD
+    if (!PortXrAvailable()) {
+        (void)path; (void)file; (void)value; (void)saved;
+        return;
+    }
     s_gameSpeedPercent = GAME_SPEED_DEFAULT_XR;
     value = RuntimeConfigGet("xr.race_speed");
     if (value != NULL)
@@ -227,8 +231,10 @@ int PortAdjustGameSpeed(int direction) {
     int next;
 
     LoadGameSpeed();
-#ifndef __ANDROID__
+#if !RAGE_XR_BUILD
     return 0;
+#else
+    if (!PortXrAvailable()) return 0;
 #endif
     if (direction == 0) return 0;
     next = ClampGameSpeed(s_gameSpeedPercent +
@@ -241,7 +247,8 @@ int PortAdjustGameSpeed(int direction) {
 
 void PortCycleGameSpeed(void) {
     LoadGameSpeed();
-#ifdef __ANDROID__
+#if RAGE_XR_BUILD
+    if (!PortXrAvailable()) return;
     s_gameSpeedPercent = s_gameSpeedPercent >= GAME_SPEED_MAX
         ? GAME_SPEED_MIN : s_gameSpeedPercent + GAME_SPEED_STEP;
     SaveGameSpeed();
@@ -254,7 +261,7 @@ void PortGameSpeedLabel(char *text, size_t size) {
     snprintf(text, size, "SPEED %d%%", s_gameSpeedPercent);
 }
 
-#ifdef __ANDROID__
+#if RAGE_XR_BUILD
 /* Set again on every tick so only races are slowed. */
 static void PortApplyGameSpeed(void) {
     LoadGameSpeed();
@@ -270,8 +277,8 @@ static void PortApplyGameSpeed(void) {
 #endif
 
 void PortAfterSceneHandler(void) {
-#ifdef __ANDROID__
-    PortApplyGameSpeed();
+#if RAGE_XR_BUILD
+    if (PortXrAvailable()) PortApplyGameSpeed();
 #endif
     PortLogGameSpeed();
     GameRenderWorldPublishCurrentCamera();

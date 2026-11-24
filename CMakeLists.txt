@@ -321,6 +321,19 @@ if(RAGE_BUILD_PORT)
     add_subdirectory(external/libchdr external-libchdr)
     target_include_directories(miniz PUBLIC
         external/libchdr/deps/miniz-3.1.2)
+    # PC VR (experimental): present the existing Quest VR mode through an
+    # OpenXR runtime on the desktop (Virtual Desktop/VDXR, Quest Link,
+    # SteamVR). Off by default; the flat build is unchanged when off.
+    option(RAGE_PC_XR "Experimental PC VR through OpenXR (Windows)" OFF)
+    if(RAGE_PC_XR AND NOT ANDROID)
+        if(NOT PSYZ_RENDERER STREQUAL "sdl3_gpu" AND DEFINED PSYZ_RENDERER)
+            message(FATAL_ERROR "RAGE_PC_XR needs PSYZ_RENDERER=sdl3_gpu")
+        endif()
+        set(PSYZ_DESKTOP_XR ON CACHE BOOL "" FORCE)
+        add_compile_definitions(RAGE_PC_XR=1)
+    else()
+        set(PSYZ_DESKTOP_XR OFF CACHE BOOL "" FORCE)
+    endif()
     add_subdirectory(external/psyz/psyz external-psyz)
 
     file(GLOB_RECURSE RAGE_GAME_SOURCES CONFIGURE_DEPENDS
@@ -831,6 +844,20 @@ if(RAGE_BUILD_PORT)
                 TIMEOUT 180)
         endif()
     endif()
+endif()
+
+# PC VR defines RAGE_PC_XR for the whole tree, but the offline tools and some
+# unit tests do not link psyz's XR layer: build them as flat.
+function(rage_flat_target target)
+    if(TARGET ${target})
+        # Options follow the -D flags on the command line, so this wins.
+        target_compile_options(${target} PRIVATE
+            $<IF:$<C_COMPILER_FRONTEND_VARIANT:MSVC>,/URAGE_PC_XR,-URAGE_PC_XR>)
+    endif()
+endfunction()
+if(RAGE_PC_XR)
+    rage_flat_target(rage-frame-replay)
+    rage_flat_target(rage-render-stage)
 endif()
 
 if(BUILD_TESTING)
