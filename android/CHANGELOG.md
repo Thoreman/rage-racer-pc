@@ -16,6 +16,12 @@
   headset through OpenXR (tested with a Quest 3 over Virtual Desktop) and
   runs as the normal flat game when no headset is found. Known issue:
   occasional audio clicks on weaker PCs in VR when the system stalls.
+- PC VR rc2: controller layouts for Valve Index, HTC Vive, Windows Mixed
+  Reality and a generic fallback (untested; Touch remains the tested
+  layout); the headset shows black instead of a stale flat image while a
+  race's textures upload; GRAPHICS offers 8X anti-aliasing and resolution
+  up to 150% on PC (the Quest keeps 4X and 100%); `PSYZ_XR_TIMING=1` logs
+  fps, game work and runtime wait once a second.
 
 ## 0.6.4 beta
 

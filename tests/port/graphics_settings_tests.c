@@ -175,7 +175,11 @@ static void TestClampsAtEnds(void) {
     BaseAdd("xr.eye_scale", "1.00");
     GraphicsSettingsInit(FakeBase, "quest3");
     GraphicsRowAdjust(GFX_ROW_RESOLUTION, +1);
+#if defined(RAGE_PC_XR)
+    ExpectStr("resolution step past 100 on pc", GraphicsSettingGet("xr.eye_scale"), "1.05");
+#else
     ExpectStr("resolution top", GraphicsSettingGet("xr.eye_scale"), "1.00");
+#endif
     GraphicsRowAdjust(GFX_ROW_FOVEATION, -1);
     GraphicsRowAdjust(GFX_ROW_FOVEATION, -1);
     GraphicsRowAdjust(GFX_ROW_FOVEATION, -1);
@@ -484,7 +488,27 @@ static void TestFpsRow(void) {
               !strcmp(GraphicsSettingGet("xr.fps_display"), "false"), 1);
 }
 
+static void TestPlatformLimits(void) {
+    char text[64];
+    int i;
+    BaseClear();
+    GraphicsSettingsInit(FakeBase, "quest3");
+    for (i = 0; i < 4; i++) GraphicsRowAdjust(GFX_ROW_ANTIALIAS, +1);
+    for (i = 0; i < 12; i++) GraphicsRowAdjust(GFX_ROW_RESOLUTION, +1);
+    Label(GFX_ROW_ANTIALIAS, text, sizeof text);
+#if defined(RAGE_PC_XR)
+    ExpectContains("pc top anti-alias", text, "8X");
+    ExpectStr("pc 8 samples", GraphicsSettingGet("xr.msaa_samples"), "8");
+    ExpectStr("pc top resolution", GraphicsSettingGet("xr.eye_scale"), "1.50");
+#else
+    ExpectContains("quest top anti-alias", text, "4X");
+    ExpectStr("quest 4 samples", GraphicsSettingGet("xr.msaa_samples"), "4");
+    ExpectStr("quest top resolution", GraphicsSettingGet("xr.eye_scale"), "1.00");
+#endif
+}
+
 int main(void) {
+    TestPlatformLimits();
     TestRowParts();
     TestDefaultsFollowProfile();
     TestIniBeatsDefaultPreset();

@@ -1995,7 +1995,8 @@ static int ModernEnsureEyeTargets(unsigned w, unsigned h,
             "(built in %.1f ms)\n", w, h,
             !s_eyeMsaaOn ? "off"
             : ModernNativeGpuEyeSampleCount() == SDL_GPU_SAMPLECOUNT_2 ? "2x"
-                                                                      : "4x",
+            : ModernNativeGpuEyeSampleCount() == SDL_GPU_SAMPLECOUNT_4 ? "4x"
+                                                                      : "8x",
             ModernXrMsSince(buildStart));
     return 1;
 }
@@ -2120,6 +2121,10 @@ static int ModernPresentXrStereo(const RageSceneSnapshot *snapshot,
         GameRenderWorldSetFullVisibility(0);
 #if RAGE_PC_XR
         s_xrStereoRunning = 0;
+        if (s_xrWarmActive) {
+            s_xrWarmActive = 0;
+            Psyz_XrSetBlank(0);
+        }
 #endif
         return 0;
     }
@@ -2132,6 +2137,8 @@ static int ModernPresentXrStereo(const RageSceneSnapshot *snapshot,
         s_xrWarmFrames = 0;
         s_xrWarmLoaded = 0;
         s_xrWarmStart = SDL_GetPerformanceCounter();
+        /* Black while uploading, not a stale flat image. */
+        Psyz_XrSetBlank(1);
     }
 #endif
     /* Takes effect from the next published world (one logic frame). */
@@ -2213,6 +2220,7 @@ static int ModernPresentXrStereo(const RageSceneSnapshot *snapshot,
             return 1;
         }
         s_xrWarmActive = 0;
+        Psyz_XrSetBlank(0);
         if (s_xrWarmLoaded != 0 || s_xrWarmFrames > 1)
             fprintf(stderr, "rage-port: XR stereo warm-up uploaded %u "
                     "textures over %u frames (%.1f ms)%s\n", s_xrWarmLoaded,

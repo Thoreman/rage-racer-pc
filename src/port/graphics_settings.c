@@ -50,6 +50,16 @@ static const int kLamps[] = {2, 4, 6, 8, 72}; /* 72 = ALL, the renderer's ceilin
 static const double kSharpen[] = {0.0, 0.35, 0.70};
 static const char *const kSharpenLabel[] = {"OFF", "LOW", "HIGH"};
 
+/* PC VR: GPUs with headroom get 8X anti-aliasing and supersampling to
+ * 150% eye resolution. The Quest keeps 4X and 100%. */
+#if defined(RAGE_PC_XR)
+#define GFX_MAX_AA_INDEX 3
+#define GFX_MAX_PCT 150
+#else
+#define GFX_MAX_AA_INDEX 2
+#define GFX_MAX_PCT 100
+#endif
+
 #define VIVID_SATURATION 1.25
 #define VIVID_CONTRAST 1.08
 
@@ -173,7 +183,10 @@ static int SharpenIndex(void) {
 
 static int AntialiasValue(void) {
     if (!EffectiveBool(K_MSAA)) return 0;
-    return (int)EffectiveNumber(K_SAMPLES, 2) > 2 ? 4 : 2; /* matches the renderer */
+    { /* matches the renderer */
+        int n = (int)EffectiveNumber(K_SAMPLES, 2);
+        return n <= 2 ? 2 : (n <= 4 || GFX_MAX_AA_INDEX < 3) ? 4 : 8;
+    }
 }
 
 static int CurrentPreset(void) {
@@ -248,7 +261,9 @@ static void StoreChecked(int k, const char *value) {
         else if (StrEqI(value, "false")) MenuSet(k, "false");
         return;
     case K_SAMPLES:
-        if (!strcmp(value, "2") || !strcmp(value, "4")) MenuSet(k, value);
+        if (!strcmp(value, "2") || !strcmp(value, "4") ||
+            (GFX_MAX_AA_INDEX >= 3 && !strcmp(value, "8")))
+            MenuSet(k, value);
         return;
     case K_REFRESH:
         i = atoi(value);
@@ -282,7 +297,9 @@ static void StoreChecked(int k, const char *value) {
     case K_EYE_SCALE: case K_SATURATION: case K_CONTRAST:
         d = strtod(value, &end);
         if (end == value || *end || !isfinite(d)) return;
-        if (k == K_EYE_SCALE ? (d < 0.5 || d > 1.0) : (d < 0.5 || d > 2.0)) return;
+        if (k == K_EYE_SCALE ? (d < 0.5 || d > GFX_MAX_PCT / 100.0)
+                             : (d < 0.5 || d > 2.0))
+            return;
         MenuSetF(k, d);
         return;
     }
@@ -396,7 +413,8 @@ void GraphicsRowParts(GraphicsRow row, char *name, size_t nameSize,
         break;
     case GFX_ROW_ANTIALIAS:
         i = AntialiasValue();
-        snprintf(value, sizeof value, "%s", i == 0 ? "OFF" : i == 2 ? "2X" : "4X");
+        snprintf(value, sizeof value, "%s",
+                 i == 0 ? "OFF" : i == 2 ? "2X" : i == 4 ? "4X" : "8X");
         break;
     case GFX_ROW_RESOLUTION:
         snprintf(value, sizeof value, "%d%%", Pct());
@@ -507,19 +525,19 @@ void GraphicsRowAdjust(GraphicsRow row, int direction) {
         break;
     case GFX_ROW_ANTIALIAS:
         i = AntialiasValue();
-        i = i == 0 ? 0 : i == 2 ? 1 : 2;
+        i = i == 0 ? 0 : i == 2 ? 1 : i == 4 ? 2 : 3;
         i += Step(direction);
         if (i < 0) i = 0;
-        if (i > 2) i = 2;
+        if (i > GFX_MAX_AA_INDEX) i = GFX_MAX_AA_INDEX;
         MenuSet(K_MSAA, Bool(i != 0));
-        if (i) MenuSet(K_SAMPLES, i == 2 ? "4" : "2"); /* index 1 = 2X, 2 = 4X */
+        if (i) MenuSet(K_SAMPLES, i == 1 ? "2" : i == 2 ? "4" : "8"); /* 1 = 2X, 2 = 4X, 3 = 8X */
         break;
     case GFX_ROW_RESOLUTION: {
         int pct = Pct();
         if (direction > 0) pct = (pct / 5 + 1) * 5;
         else pct = pct % 5 ? (pct / 5) * 5 : pct - 5;
         if (pct < 70) pct = 70;
-        if (pct > 100) pct = 100;
+        if (pct > GFX_MAX_PCT) pct = GFX_MAX_PCT;
         MenuSetF(K_EYE_SCALE, pct / 100.0);
         break;
     }

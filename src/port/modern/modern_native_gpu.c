@@ -784,15 +784,30 @@ static void ModernNativeReleaseMsaaPipelines(void) {
 SDL_GPUSampleCount ModernNativeGpuEyeSampleCount(void) {
     static int logged;
     int samples;
-    if (!RuntimeParseInt(XrProfileSetting("xr.msaa_samples"), 0, 2, 4,
+#if RAGE_PC_XR
+    const int maxSamples = 8; /* PC GPUs: 8X when the GPU supports it */
+#else
+    const int maxSamples = 4;
+#endif
+    if (!RuntimeParseInt(XrProfileSetting("xr.msaa_samples"), 0, 2, maxSamples,
                          &samples))
         samples = 2;
-    samples = samples <= 2 ? 2 : 4;
+    samples = samples <= 2 ? 2 : samples <= 4 ? 4 : 8;
+    if (samples == 8 &&
+        (s_device == NULL ||
+         !SDL_GPUTextureSupportsSampleCount(
+             s_device, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+             SDL_GPU_SAMPLECOUNT_8) ||
+         !SDL_GPUTextureSupportsSampleCount(
+             s_device, SDL_GPU_TEXTUREFORMAT_D32_FLOAT, SDL_GPU_SAMPLECOUNT_8)))
+        samples = 4;
     if (samples != logged) {
         logged = samples;
         fprintf(stderr, "rage-port: XR MSAA samples %d\n", samples);
     }
-    return samples == 2 ? SDL_GPU_SAMPLECOUNT_2 : SDL_GPU_SAMPLECOUNT_4;
+    return samples == 2   ? SDL_GPU_SAMPLECOUNT_2
+           : samples == 4 ? SDL_GPU_SAMPLECOUNT_4
+                          : SDL_GPU_SAMPLECOUNT_8;
 }
 
 /* Called only while the eye targets are being (re)built, before the frame's
@@ -805,8 +820,8 @@ int ModernNativeGpuEyeMsaaReady(void) {
     SDL_GPUSampleCount samples = ModernNativeGpuEyeSampleCount();
     if (s_msaaState != 0 && samples != s_msaaSamples) {
         fprintf(stderr, "rage-port: XR MSAA %dx -> %dx, rebuilding pipelines\n",
-                s_msaaSamples == SDL_GPU_SAMPLECOUNT_2 ? 2 : 4,
-                samples == SDL_GPU_SAMPLECOUNT_2 ? 2 : 4);
+                s_msaaSamples == SDL_GPU_SAMPLECOUNT_2 ? 2 : s_msaaSamples == SDL_GPU_SAMPLECOUNT_4 ? 4 : 8,
+                samples == SDL_GPU_SAMPLECOUNT_2 ? 2 : samples == SDL_GPU_SAMPLECOUNT_4 ? 4 : 8);
         ModernNativeReleaseMsaaPipelines(); /* resets s_msaaState to 0 */
     }
     if (s_msaaState != 0) return s_msaaState > 0;
@@ -887,7 +902,7 @@ int ModernNativeGpuEyeMsaaReady(void) {
     }
     s_msaaState = 1;
     fprintf(stderr, "rage-port: XR %dx MSAA pipelines ready\n",
-            samples == SDL_GPU_SAMPLECOUNT_2 ? 2 : 4);
+            samples == SDL_GPU_SAMPLECOUNT_2 ? 2 : samples == SDL_GPU_SAMPLECOUNT_4 ? 4 : 8);
     return 1;
 }
 
