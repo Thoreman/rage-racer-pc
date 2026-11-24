@@ -8,6 +8,8 @@
 
 #include "rage/hud_config.h"
 
+#include <stdio.h>
+
 enum {
     TIME_ATTACK_STATIC_LABEL_COUNT = 3,
     GRAND_PRIX_STATIC_LABEL_COUNT = 6,
@@ -41,6 +43,9 @@ static s32 RaceHudLabelVisible(s32 grandPrixMode, s32 label) {
         return HudShowLapTimes();
     }
     if (label == GRAND_PRIX_TIME_LIMIT_LABEL) {
+        if (HudShowFps()) {
+            return 0;
+        }
         return HudShowTimeLimit();
     }
     return 1;
@@ -117,6 +122,14 @@ void DrawLapTimes(s32 bestLap) {
 
 void DrawTimeRemaining(s32 ticks) {
     s32 clut = HUD_DEFAULT_CLUT;
+
+    if (HudShowFps()) {
+        char text[16];
+
+        snprintf(text, sizeof text, "FPS %d", HudFpsValue());
+        DrawText8x8(HudLeftX(0xE), 0xD2, text, HUD_DEFAULT_CLUT);
+        return;
+    }
 
     if (!HudShowTimeLimit()) {
         return;

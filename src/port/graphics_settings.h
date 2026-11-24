@@ -21,6 +21,7 @@ typedef enum GraphicsRow {
     GFX_ROW_MIRROR,
     GFX_ROW_SHARPEN,
     GFX_ROW_COLOUR,
+    GFX_ROW_FPS_COUNTER,
     GFX_ROW_REFRESH,
     GFX_ROW_COUNT
 } GraphicsRow;
@@ -51,7 +52,7 @@ void GraphicsRowParts(GraphicsRow row, char *name, size_t nameSize,
 /* Steps a row by direction (+1/-1), clamping at the ends. PRESET applies the
  * chosen preset; changing a preset row (FOVEATION, ANTI-ALIAS, TEXTURE DETAIL,
  * CAR LAMPS, LAMP LIGHTING, LAMP GLOWS, SHADOWS, MIRROR) by hand makes the
- * PRESET CUSTOM (SHARPEN, RESOLUTION, COLOUR and REFRESH do not). */
+ * PRESET CUSTOM (SHARPEN, RESOLUTION, COLOUR, FPS COUNTER and REFRESH do not). */
 void GraphicsRowAdjust(GraphicsRow row, int direction);
 
 const char *GraphicsRowNote(GraphicsRow row);

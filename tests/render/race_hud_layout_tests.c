@@ -34,6 +34,10 @@ static int s_failures;
 const RagePortConfig *PortActiveConfig(void) { return &s_config; }
 int ModernIsEnabled(void) { return s_modernEnabled; }
 int ModernPresentationActive(void) { return ModernIsEnabled(); }
+int PortXrAvailable(void) { return 0; }
+int XrProfileEnabled(const char *key) { (void)key; return 1; }
+unsigned GraphicsSettingsGeneration(void) { return 0; }
+int ModernXrMeasuredFps(void) { return 0; }
 const char *RuntimeConfigGet(const char *key) {
     if (!strcmp(key, "hud.anchor")) return s_anchor;
     return NULL;

@@ -80,7 +80,8 @@ static void TestDefaultsFollowProfile(void) {
     Label(GFX_ROW_PRESET, text, sizeof text);
     ExpectContains("quest2 preset", text, "LOW");
     GraphicsSettingsInit(FakeBase, "quest3");
-    ExpectStr("quest3 lamp lighting", GraphicsSettingGet("xr.lamp_lighting"), "true");
+    ExpectStr("quest3 lamp lighting", GraphicsSettingGet("xr.lamp_lighting"), "false");
+    ExpectStr("quest3 msaa", GraphicsSettingGet("xr.msaa"), "true");
     Label(GFX_ROW_PRESET, text, sizeof text);
     ExpectContains("quest3 preset", text, "HIGH");
     GraphicsSettingsInit(FakeBase, "unknown");
@@ -106,7 +107,7 @@ static void TestPresetWritesAllKeys(void) {
     char text[64];
     const char *path = "graphics_settings_test_file.txt";
     BaseClear();
-    BaseAdd("xr.msaa", "true");
+    BaseAdd("xr.lamp_glows", "true");
     GraphicsSettingsInit(FakeBase, "quest3");
     /* The base ini makes the starting point CUSTOM, which sits past ULTRA. */
     GraphicsRowAdjust(GFX_ROW_PRESET, -1);
@@ -133,7 +134,7 @@ static void TestRowChangeMakesCustom(void) {
     char text[64];
     BaseClear();
     GraphicsSettingsInit(FakeBase, "quest3");
-    GraphicsRowAdjust(GFX_ROW_LAMP_GLOWS, -1);
+    GraphicsRowAdjust(GFX_ROW_LAMP_GLOWS, +1);
     Label(GFX_ROW_PRESET, text, sizeof text);
     ExpectContains("custom after row change", text, "CUSTOM");
 }
@@ -229,7 +230,7 @@ static void TestCustomEntersPresetList(void) {
     char text[64];
     BaseClear();
     GraphicsSettingsInit(FakeBase, "quest3");
-    GraphicsRowAdjust(GFX_ROW_LAMP_GLOWS, -1);
+    GraphicsRowAdjust(GFX_ROW_LAMP_GLOWS, +1);
     GraphicsRowAdjust(GFX_ROW_PRESET, +1);
     Label(GFX_ROW_PRESET, text, sizeof text);
     ExpectContains("custom right enters at low", text, "LOW");
@@ -275,22 +276,22 @@ static void TestSnapshotRestore(void) {
     GraphicsSettingsSnapshotRestore(&snap);
     ExpectInt("restore of unchanged state keeps generation",
            GraphicsSettingsGeneration() == gen, 1);
-    GraphicsRowAdjust(GFX_ROW_SHADOWS, -1);
+    GraphicsRowAdjust(GFX_ROW_SHADOWS, +1);
     Label(GFX_ROW_PRESET, text, sizeof text);
     ExpectContains("hand change reads custom", text, "CUSTOM");
     gen = GraphicsSettingsGeneration();
     GraphicsSettingsSnapshotRestore(&snap);
     ExpectInt("restore of a change bumps generation",
            GraphicsSettingsGeneration() != gen, 1);
-    ExpectStr("shadows back", GraphicsSettingGet("xr.shadows"), "true");
+    ExpectStr("shadows back", GraphicsSettingGet("xr.shadows"), "false");
     Label(GFX_ROW_PRESET, text, sizeof text);
     ExpectContains("preset back", text, "HIGH");
     GraphicsRowAdjust(GFX_ROW_PRESET, -1);
     GraphicsSettingsSnapshotTake(&snap);
-    GraphicsRowAdjust(GFX_ROW_COLOUR, 1);
+    GraphicsRowAdjust(GFX_ROW_COLOUR, -1);
     GraphicsSettingsSnapshotRestore(&snap);
     Label(GFX_ROW_COLOUR, text, sizeof text);
-    ExpectContains("colour back", text, "STANDARD");
+    ExpectContains("colour back", text, "VIVID");
     Label(GFX_ROW_PRESET, text, sizeof text);
     ExpectContains("chosen preset kept", text, "MEDIUM");
 }
@@ -310,7 +311,8 @@ static void TestProfileMsaaDoesNotOutrankPreset(void) {
     /* The caller's base lookup carries no msaa; the default preset supplies it. */
     BaseClear();
     GraphicsSettingsInit(FakeBase, "quest3");
-    ExpectStr("preset msaa", GraphicsSettingGet("xr.msaa"), "false");
+    ExpectStr("preset msaa", GraphicsSettingGet("xr.msaa"), "true");
+    ExpectStr("preset samples", GraphicsSettingGet("xr.msaa_samples"), "2");
 }
 
 static void TestSamplesThreeShowsFourX(void) {
@@ -326,14 +328,19 @@ static void TestSamplesThreeShowsFourX(void) {
 static void TestNewRowDefaults(void) {
     BaseClear();
     GraphicsSettingsInit(FakeBase, "quest3");
-    ExpectStr("q3 lamps", GraphicsSettingGet("xr.max_spot_lights"), "6");
+    ExpectStr("q3 lamps", GraphicsSettingGet("xr.max_spot_lights"), "4");
     ExpectStr("q3 mirror", GraphicsSettingGet("xr.mirror"), "half");
     ExpectStr("q3 texture", GraphicsSettingGet("xr.texture_detail"), "standard");
-    ExpectStr("q3 sharpen", GraphicsSettingGet("xr.sharpen"), "0.00");
+    ExpectStr("q3 sharpen", GraphicsSettingGet("xr.sharpen"), "0.70");
+    ExpectStr("q3 saturation", GraphicsSettingGet("xr.saturation"), "1.25");
+    ExpectStr("q3 contrast", GraphicsSettingGet("xr.contrast"), "1.08");
+    ExpectStr("q3 fps", GraphicsSettingGet("xr.fps_display"), "false");
     GraphicsSettingsInit(FakeBase, "quest2");
     ExpectStr("q2 lamps", GraphicsSettingGet("xr.max_spot_lights"), "2");
     ExpectStr("q2 mirror", GraphicsSettingGet("xr.mirror"), "half");
     ExpectStr("q2 texture", GraphicsSettingGet("xr.texture_detail"), "standard");
+    ExpectStr("q2 sharpen", GraphicsSettingGet("xr.sharpen"), "0.00");
+    ExpectInt("q2 saturation unset", GraphicsSettingGet("xr.saturation") == NULL, 1);
 }
 
 static void TestUltraSetsNewRows(void) {
@@ -369,7 +376,7 @@ static void TestNewPresetRowsMakeCustom(void) {
     Label(GFX_ROW_PRESET, text, sizeof text);
     ExpectContains("mirror makes custom", text, "CUSTOM");
     GraphicsSettingsInit(FakeBase, "quest3");
-    GraphicsRowAdjust(GFX_ROW_SHARPEN, +1);
+    GraphicsRowAdjust(GFX_ROW_SHARPEN, -1);
     ExpectStr("sharpen low", GraphicsSettingGet("xr.sharpen"), "0.35");
     Label(GFX_ROW_PRESET, text, sizeof text);
     ExpectContains("sharpen keeps preset", text, "HIGH");
@@ -399,7 +406,7 @@ static void TestLampsOutOfRange(void) {
     BaseAdd("xr.max_spot_lights", "nan");
     GraphicsSettingsInit(FakeBase, "quest3");
     Label(GFX_ROW_CAR_LAMPS, text, sizeof text);
-    ExpectContains("nan lamps default", text, "6");
+    ExpectContains("nan lamps default", text, "4");
     Label(GFX_ROW_PRESET, text, sizeof text);
     ExpectContains("nan lamps preset", text, "HIGH");
     BaseClear();
@@ -418,9 +425,9 @@ static void TestRoundOneFileLoads(void) {
                     "xr.lamp_lighting = true\nxr.lamp_glows = true\nxr.shadows = true\n");
     ExpectInt("round one load", GraphicsSettingsLoad(path), 1);
     ExpectStr("r1 mirror", GraphicsSettingGet("xr.mirror"), "half");
-    ExpectStr("r1 lamps", GraphicsSettingGet("xr.max_spot_lights"), "6");
+    ExpectStr("r1 lamps", GraphicsSettingGet("xr.max_spot_lights"), "4");
     Label(GFX_ROW_PRESET, text, sizeof text);
-    ExpectContains("r1 preset", text, "HIGH");
+    ExpectContains("r1 preset", text, "CUSTOM");
     remove(path);
 }
 
@@ -429,6 +436,52 @@ static void TestNewNotes(void) {
     ExpectStr("mirror note", GraphicsRowNote(GFX_ROW_MIRROR), "APPLIES FROM NEXT RACE");
     ExpectStr("texture note", GraphicsRowNote(GFX_ROW_TEXTURE_DETAIL), "APPLIES FROM NEXT RACE");
     ExpectStr("sharpen note", GraphicsRowNote(GFX_ROW_SHARPEN), "APPLIES FROM NEXT RACE");
+}
+
+
+static void TestFpsRow(void) {
+    char text[64];
+    const char *path = "graphics_settings_fps_file.txt";
+    GraphicsSettingsSnapshot snap;
+    unsigned gen;
+
+    BaseClear();
+    GraphicsSettingsInit(FakeBase, "quest3");
+    ExpectInt("fps row before refresh", GFX_ROW_FPS_COUNTER + 1, GFX_ROW_REFRESH);
+    ExpectInt("colour before fps", GFX_ROW_COLOUR + 1, GFX_ROW_FPS_COUNTER);
+    ExpectInt("refresh last", GFX_ROW_REFRESH + 1, GFX_ROW_COUNT);
+    Label(GFX_ROW_FPS_COUNTER, text, sizeof text);
+    ExpectContains("fps name", text, "FPS COUNTER");
+    ExpectContains("fps default off", text, "OFF");
+    ExpectInt("fps default value not on", GraphicsSettingGet("xr.fps_display") == NULL ||
+              !strcmp(GraphicsSettingGet("xr.fps_display"), "false"), 1);
+    ExpectStr("fps note", GraphicsRowNote(GFX_ROW_FPS_COUNTER), "APPLIES NOW");
+    ExpectStr("refresh note unchanged", GraphicsRowNote(GFX_ROW_REFRESH), "RESTART TO APPLY");
+
+    GraphicsSettingsSnapshotTake(&snap);
+    gen = GraphicsSettingsGeneration();
+    GraphicsRowAdjust(GFX_ROW_FPS_COUNTER, +1);
+    ExpectInt("generation bumps", GraphicsSettingsGeneration() != gen, 1);
+    Label(GFX_ROW_FPS_COUNTER, text, sizeof text);
+    ExpectContains("fps on", text, "ON");
+    ExpectStr("fps key true", GraphicsSettingGet("xr.fps_display"), "true");
+    Label(GFX_ROW_PRESET, text, sizeof text);
+    ExpectContains("fps keeps preset", text, "HIGH");
+
+    GraphicsSettingsSave(path);
+    GraphicsSettingsInit(FakeBase, "quest3");
+    ExpectInt("reset off", GraphicsSettingGet("xr.fps_display") == NULL ||
+              !strcmp(GraphicsSettingGet("xr.fps_display"), "false"), 1);
+    GraphicsSettingsLoad(path);
+    ExpectStr("fps survives load", GraphicsSettingGet("xr.fps_display"), "true");
+    remove(path);
+
+    GraphicsRowAdjust(GFX_ROW_FPS_COUNTER, -1);
+    ExpectStr("fps back off", GraphicsSettingGet("xr.fps_display"), "false");
+    GraphicsRowAdjust(GFX_ROW_FPS_COUNTER, +1);
+    GraphicsSettingsSnapshotRestore(&snap);
+    ExpectInt("snapshot restores fps", GraphicsSettingGet("xr.fps_display") == NULL ||
+              !strcmp(GraphicsSettingGet("xr.fps_display"), "false"), 1);
 }
 
 int main(void) {
@@ -459,6 +512,7 @@ int main(void) {
     TestLampsOutOfRange();
     TestRoundOneFileLoads();
     TestNewNotes();
+    TestFpsRow();
     if (failures) {
         printf("%d graphics settings assertion(s) failed\n", failures);
         return 1;

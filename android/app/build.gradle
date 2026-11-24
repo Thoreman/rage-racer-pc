@@ -26,8 +26,8 @@ android {
         applicationId "org.rageracer.quest"
         minSdkVersion 32
         targetSdkVersion 32
-        versionCode 94
-        versionName "0.6.4-beta"
+        versionCode 97
+        versionName "0.6.5-rc1"
         manifestPlaceholders = [
             appIcon: localIcon ? "@mipmap/ic_launcher_local"
                                : "@mipmap/ic_launcher"

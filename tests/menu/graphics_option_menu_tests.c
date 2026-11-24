@@ -124,7 +124,7 @@ int main(int argc, char **argv) {
     s_savePath = argc > 1 ? argv[1] : "graphics_option_menu_test.out";
     remove(s_savePath);
     g_RenderState.draw.packetCursor = packets;
-    GraphicsSettingsInit(NoBase, "quest3");
+    GraphicsSettingsInit(NoBase, "quest2");
     g_GameMode = OPTION_MODE_GRAPHICS;
     EnterGraphicsOptionMenu();
 

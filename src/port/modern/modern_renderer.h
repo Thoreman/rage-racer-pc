@@ -44,4 +44,8 @@ void ModernLogicFrameReady(uint32_t frame);
  * for presentation. Never capture a new frame from inside scene construction. */
 void ModernFrameTexturesReady(void);
 
+/* Stereo frames submitted per second over the last whole ~1 s window; 0 until
+ * the first window completes. */
+int ModernXrMeasuredFps(void);
+
 #endif

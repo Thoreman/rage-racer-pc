@@ -1977,6 +1977,34 @@ static int ModernEnsureEyeTargets(unsigned w, unsigned h,
     return 1;
 }
 
+static unsigned s_xrFpsWindowStart, s_xrFpsFrames;
+static int s_xrMeasuredFps;
+
+static void ModernXrCountFrame(void) {
+    unsigned now = (unsigned)SDL_GetTicks();
+    unsigned elapsed;
+    if (s_xrFpsWindowStart == 0) {
+        s_xrFpsWindowStart = now ? now : 1;
+        s_xrFpsFrames = 0;
+        return;
+    }
+    if (now - s_xrFpsWindowStart > 2500) { /* frames stopped: start over */
+        s_xrFpsWindowStart = now;
+        s_xrFpsFrames = 0;
+        s_xrMeasuredFps = 0;
+        return;
+    }
+    s_xrFpsFrames++;
+    elapsed = now - s_xrFpsWindowStart;
+    if (elapsed >= 1000) {
+        s_xrMeasuredFps = (int)((s_xrFpsFrames * 1000u + elapsed / 2) / elapsed);
+        s_xrFpsWindowStart = now;
+        s_xrFpsFrames = 0;
+    }
+}
+
+int ModernXrMeasuredFps(void) { return s_xrMeasuredFps; }
+
 /* XR: draws the race in stereo from the in-car camera, moved and turned by
  * the player's head. Returns 0 to fall back to the flat-screen image (menus,
  * chase and replay cameras, or no XR frame). */
@@ -2226,6 +2254,7 @@ static int ModernPresentXrStereo(const RageSceneSnapshot *snapshot,
         return 0;
     }
     ModernNativeGpuSubmitted();
+    ModernXrCountFrame();
     info->texture = NULL;
     info->hud = hud ? s_hudTarget : NULL;
     info->hud_w = (Uint32)s_targetW;

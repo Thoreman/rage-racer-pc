@@ -106,6 +106,7 @@ takes you back to the title screen with GRAPHICS still selected.
 | MIRROR | OFF, HALF RATE, FULL | next race |
 | SHARPEN | OFF, LOW, HIGH | next race |
 | COLOUR | STANDARD, VIVID | next race |
+| FPS COUNTER | OFF, ON | immediately |
 | REFRESH | 72, 80, 90, 120 Hz | restart the app |
 
 Each row shows **APPLIES FROM NEXT RACE** or **RESTART TO APPLY**. Your
@@ -118,20 +119,22 @@ choices are remembered.
   |---|---|---|---|---|---|---|---|---|
   | LOW | HIGH | OFF | STANDARD | 2 | OFF | OFF | OFF | HALF RATE |
   | MEDIUM | HIGH | OFF | STANDARD | 4 | ON | OFF | ON | HALF RATE |
-  | HIGH | HIGH | OFF | STANDARD | 6 | ON | ON | ON | HALF RATE |
+  | HIGH | HIGH | 2X | STANDARD | 4 | OFF | OFF | OFF | HALF RATE |
   | ULTRA | MEDIUM | 2X | HIGH | 8 | ON | ON | ON | FULL |
 
   Change any of those rows yourself and PRESET reads CUSTOM. RESOLUTION,
-  SHARPEN, COLOUR and REFRESH are not part of a preset.
+  SHARPEN, COLOUR, FPS COUNTER and REFRESH are not part of a preset.
 - Until you choose, the page starts on the preset for your headset: HIGH on
-  a Quest 3 or 3S, LOW on a Quest 2, MEDIUM on a Quest Pro.
+  a Quest 3 or 3S (which also start with COLOUR VIVID and SHARPEN HIGH),
+  LOW on a Quest 2, MEDIUM on a Quest Pro.
 - Foveated rendering draws the outer edges of each eye at a lower
   resolution, where the lenses blur them anyway. HIGH (the default on
   Quest 3) saves about 14% of the GPU time; MEDIUM, LOW and OFF are
   gentler.
-- Anti-aliasing (MSAA) smooths edges at a large GPU cost, so it is off in
-  most presets. It keeps heavy scenes near 72 Hz on a stock Quest 3 when
-  off; 4X smooths further than 2X (best with a performance tuner or a lower
+- Anti-aliasing (MSAA) smooths edges at a large GPU cost. HIGH trades the
+  lamp effects for 2X, which looks cleaner in the headset; it is off in the
+  lower presets, where heavy scenes stay nearer 72 Hz on a stock Quest 3;
+  4X smooths further than 2X (best with a performance tuner or a lower
   RESOLUTION).
 - LAMP LIGHTING lets the nearest car lamps light the scene and LAMP GLOWS
   draws the glow around them. SHADOWS also covers the shiny highlights and

@@ -50,6 +50,13 @@ static int s_expectedMargin = HUD_MARGIN;
 const RagePortConfig *PortActiveConfig(void) { return &s_config; }
 int ModernIsEnabled(void) { return 1; }
 int ModernPresentationActive(void) { return ModernIsEnabled(); }
+int PortXrAvailable(void) { return 0; }
+int XrProfileEnabled(const char *key) { (void)key; return 1; }
+unsigned GraphicsSettingsGeneration(void) { return 0; }
+int ModernXrMeasuredFps(void) { return 0; }
+void DrawText8x8(s32 x, s32 y, const char *text, s32 clutIndex) {
+    (void)x; (void)y; (void)text; (void)clutIndex;
+}
 const char *RuntimeConfigGet(const char *key) {
     if (strcmp(key, "hud.anchor") == 0) return s_anchor;
     return NULL;

@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "rage/hud_config.h"
 #include "game/audio.h"
 #include "rage/render_world_game.h"
 #include <psyz/audio.h>
@@ -345,6 +346,8 @@ static void UpdatePausedRaceScene(RaceScene *state) {
     if (RaceHasRivals()) {
         DrawTimeRemaining(state->timeRemaining);
         DrawRacePosition();
+    } else if (HudShowFps()) {
+        DrawTimeRemaining(state->timeRemaining);
     }
     DrawLapTimes(state->timing.bestLap);
     DrawStartCountdown(g_SceneTimer);
@@ -422,7 +425,7 @@ static void UpdateActiveRaceScene(RaceScene *state) {
     }
 
     if (g_RacePhase < RACE_PHASE_FINISHED) {
-        if (RaceHasRivals()) {
+        if (RaceHasRivals() || HudShowFps()) {
             DrawTimeRemaining(state->timeRemaining);
         }
         if (raceClock.expired) {

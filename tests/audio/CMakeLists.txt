@@ -13,6 +13,15 @@ endif()
 add_test(NAME pcm_music COMMAND pcm_music_tests)
 set_tests_properties(pcm_music PROPERTIES LABELS unit)
 
+add_executable(spu_output_limiter_tests spu_output_limiter_tests.c)
+target_link_libraries(spu_output_limiter_tests PRIVATE psyz)
+if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(spu_output_limiter_tests PRIVATE
+        ${RAGE_STRICT_WARNING_OPTIONS})
+endif()
+add_test(NAME spu_output_limiter COMMAND spu_output_limiter_tests)
+set_tests_properties(spu_output_limiter PROPERTIES LABELS unit)
+
 add_executable(cd_audio_policy_tests cd_audio_policy_tests.c)
 target_include_directories(cd_audio_policy_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/include)

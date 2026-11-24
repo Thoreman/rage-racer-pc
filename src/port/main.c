@@ -128,6 +128,12 @@ int main(int argc, char **argv) {
                                            true);
     }
 #endif
+    /* The race music is full-scale CD audio and the countdown adds loud
+     * engine voices on top; the hardware's 16-bit clamp of that sum
+     * crackles. Soft-limit the mix instead (all builds). [audio] limiter =
+     * false restores the bit-exact clamp. */
+    Psyz_SpuSetOutputLimiter(RuntimeConfigGet("audio.limiter") == NULL ||
+                             RuntimeConfigEnabled("audio.limiter"));
     if(RuntimeConfigGet("tools.car_raw"))
         return ExportRawCar(RuntimeConfigGet("tools.car_raw"),RuntimeConfigInt("tools.car_bank",10,0,255),RuntimeConfigEnabled("tools.car_rival"),RuntimeConfigInt("tools.car_part",0,0,255),RuntimeConfigGet("tools.car_output"))?EXIT_SUCCESS:EXIT_FAILURE;
     if(RuntimeConfigGet("tools.track_export"))

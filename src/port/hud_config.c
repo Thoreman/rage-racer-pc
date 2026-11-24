@@ -4,6 +4,8 @@
 #include "rage/hud_config.h"
 #include "modern/modern_renderer.h"
 #include "runtime_config.h"
+#include "graphics_settings.h"
+#include "xr_profile.h"
 
 static int s_initialized;
 static int s_anchorEdges;
@@ -51,3 +53,19 @@ int HudShowTimeLimit(void) {
     HudConfigInit();
     return s_showTimeLimit;
 }
+
+int HudShowFps(void) {
+    static unsigned generation;
+    static int generationKnown, enabled;
+    unsigned now;
+    if (!PortXrAvailable()) return 0;
+    now = GraphicsSettingsGeneration();
+    if (!generationKnown || now != generation) {
+        enabled = XrProfileEnabled("xr.fps_display");
+        generation = now;
+        generationKnown = 1;
+    }
+    return enabled;
+}
+
+int HudFpsValue(void) { return ModernXrMeasuredFps(); }

@@ -19,6 +19,10 @@ static int failures;
 const RagePortConfig *PortActiveConfig(void) { return &config; }
 int ModernIsEnabled(void) { return modernEnabled; }
 int ModernPresentationActive(void) { return ModernIsEnabled(); }
+int PortXrAvailable(void) { return 0; }
+int XrProfileEnabled(const char *key) { (void)key; return 1; }
+unsigned GraphicsSettingsGeneration(void) { return 0; }
+int ModernXrMeasuredFps(void) { return 0; }
 
 const char *RuntimeConfigGet(const char *key) {
     if (!strcmp(key, "hud.anchor")) return "edges";

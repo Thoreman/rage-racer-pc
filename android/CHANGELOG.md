@@ -1,5 +1,18 @@
 # Rage Racer on Meta Quest — changelog
 
+## 0.6.5 release candidate 1
+
+- FPS counter option on the GRAPHICS page; replaces the time-remaining
+  display when on.
+- Quest 3 and 3S defaults are now the settings tuned in the headset: the
+  HIGH preset uses 2X anti-aliasing and 4 car lamps with lamp lighting,
+  lamp glows and shadows off, and COLOUR starts VIVID with SHARPEN HIGH.
+  Settings you have already changed on the GRAPHICS page are kept.
+- Fixed a crackle at the race countdown: the race music plus the engine
+  sounds went over the maximum volume and were cut off harshly. The mix
+  is now limited smoothly instead (`[audio] limiter = false` in
+  `rage-port.ini` restores the old behaviour).
+
 ## 0.6.4 beta
 
 - New **GRAPHICS** page, opened from a GRAPHICS button on the title menu

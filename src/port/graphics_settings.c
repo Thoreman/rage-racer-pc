@@ -8,14 +8,14 @@
 enum {
     K_FOVEATION, K_MSAA, K_SAMPLES, K_EYE_SCALE, K_LAMP_LIGHTING,
     K_LAMP_GLOWS, K_SHADOWS, K_REFRESH, K_SATURATION, K_CONTRAST,
-    K_LAMPS, K_MIRROR, K_TEXTURE, K_SHARPEN, K_COUNT
+    K_LAMPS, K_MIRROR, K_TEXTURE, K_SHARPEN, K_FPS, K_COUNT
 };
 
 static const char *const kKeyNames[K_COUNT] = {
     "xr.foveation", "xr.msaa", "xr.msaa_samples", "xr.eye_scale",
     "xr.lamp_lighting", "xr.lamp_glows", "xr.shadows", "xr.refresh_rate",
     "xr.saturation", "xr.contrast", "xr.max_spot_lights", "xr.mirror",
-    "xr.texture_detail", "xr.sharpen"
+    "xr.texture_detail", "xr.sharpen", "xr.fps_display"
 };
 
 enum { PRESET_LOW, PRESET_MEDIUM, PRESET_HIGH, PRESET_ULTRA, PRESET_COUNT };
@@ -36,7 +36,7 @@ typedef struct PresetValues {
 static const PresetValues kPresets[PRESET_COUNT] = {
     {"high", 0, 0, 0, 0, 2, "half", "standard"},
     {"high", 0, 1, 0, 1, 4, "half", "standard"},
-    {"high", 0, 1, 1, 1, 6, "half", "standard"},
+    {"high", 2, 0, 0, 0, 4, "half", "standard"},
     {"medium", 2, 1, 1, 1, 8, "full", "high"},
 };
 
@@ -61,6 +61,7 @@ static int gMenuSet[K_COUNT];
 static unsigned gGeneration;
 static int gForceCustom; /* a row was changed by hand since the last preset */
 static int gPresetChosen; /* the player picked (or the file named) a preset */
+static int gVividDefault; /* Quest 3/3S: VIVID colour and HIGH sharpen by default */
 
 static int StrEqI(const char *a, const char *b) {
     for (; *a && *b; a++, b++) {
@@ -109,7 +110,10 @@ static const char *PresetValue(int preset, int k) {
         return gPresetNumber;
     case K_MIRROR: return p->mirror;
     case K_TEXTURE: return p->texture;
-    case K_SHARPEN: return "0.00";
+    case K_SHARPEN: return gVividDefault ? "0.70" : "0.00";
+    case K_SATURATION: return gVividDefault ? "1.25" : NULL;
+    case K_CONTRAST: return gVividDefault ? "1.08" : NULL;
+    case K_FPS: return "false";
     default: return NULL;
     }
 }
@@ -153,7 +157,7 @@ static int NameIndex(int k, const char *const *names, int count) {
 
 static int LampsValue(void) {
     double d = EffectiveNumber(K_LAMPS, 6);
-    if (d != d) d = 6; /* NaN: the default */
+    if (d != d) d = atoi(PresetValue(gDefaultPreset, K_LAMPS)); /* NaN: the default */
     if (d < 0) d = 0;
     if (d > 72) d = 72;
     return (int)d;
@@ -220,7 +224,10 @@ void GraphicsSettingsInit(GraphicsBaseLookup base, const char *profileName) {
     gDefaultPreset = PRESET_HIGH;
     gForceCustom = 0;
     gPresetChosen = 0;
+    gVividDefault = 0;
     if (profileName) {
+        if (!strcmp(profileName, "quest3") || !strcmp(profileName, "quest3s"))
+            gVividDefault = 1;
         if (!strcmp(profileName, "quest2")) gDefaultPreset = PRESET_LOW;
         else if (!strcmp(profileName, "questpro")) gDefaultPreset = PRESET_MEDIUM;
     }
@@ -236,7 +243,7 @@ static void StoreChecked(int k, const char *value) {
         for (i = 0; i < 4; i++)
             if (StrEqI(value, kFoveation[i])) { MenuSet(k, kFoveation[i]); return; }
         return;
-    case K_MSAA: case K_LAMP_LIGHTING: case K_LAMP_GLOWS: case K_SHADOWS:
+    case K_MSAA: case K_LAMP_LIGHTING: case K_LAMP_GLOWS: case K_SHADOWS: case K_FPS:
         if (StrEqI(value, "true")) MenuSet(k, "true");
         else if (StrEqI(value, "false")) MenuSet(k, "false");
         return;
@@ -353,7 +360,7 @@ const char *GraphicsSettingGet(const char *key) {
 static const char *const kRowNames[GFX_ROW_COUNT] = {
     "PRESET", "FOVEATION", "ANTI-ALIAS", "RESOLUTION", "TEXTURE DETAIL",
     "CAR LAMPS", "LAMP LIGHTING", "LAMP GLOWS", "SHADOWS", "MIRROR", "SHARPEN",
-    "COLOUR", "REFRESH"
+    "COLOUR", "FPS COUNTER", "REFRESH"
 };
 
 #define LABEL_WIDTH 24
@@ -419,6 +426,9 @@ void GraphicsRowParts(GraphicsRow row, char *name, size_t nameSize,
         break;
     case GFX_ROW_SHADOWS:
         snprintf(value, sizeof value, "%s", EffectiveBool(K_SHADOWS) ? "ON" : "OFF");
+        break;
+    case GFX_ROW_FPS_COUNTER:
+        snprintf(value, sizeof value, "%s", EffectiveBool(K_FPS) ? "ON" : "OFF");
         break;
     case GFX_ROW_REFRESH:
         snprintf(value, sizeof value, "%d HZ", (int)EffectiveNumber(K_REFRESH, 72));
@@ -547,6 +557,7 @@ void GraphicsRowAdjust(GraphicsRow row, int direction) {
     case GFX_ROW_LAMP_LIGHTING: AdjustBool(K_LAMP_LIGHTING, direction); break;
     case GFX_ROW_LAMP_GLOWS: AdjustBool(K_LAMP_GLOWS, direction); break;
     case GFX_ROW_SHADOWS: AdjustBool(K_SHADOWS, direction); break;
+    case GFX_ROW_FPS_COUNTER: AdjustBool(K_FPS, direction); break;
     case GFX_ROW_REFRESH: {
         int hz = (int)EffectiveNumber(K_REFRESH, 72), n = -1;
         if (direction > 0) {
@@ -583,6 +594,7 @@ void GraphicsRowAdjust(GraphicsRow row, int direction) {
 }
 
 const char *GraphicsRowNote(GraphicsRow row) {
+    if (row == GFX_ROW_FPS_COUNTER) return "APPLIES NOW";
     return row == GFX_ROW_RESOLUTION || row == GFX_ROW_REFRESH
                ? "RESTART TO APPLY" : "APPLIES FROM NEXT RACE";
 }

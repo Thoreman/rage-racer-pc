@@ -19,4 +19,9 @@ int HudAnchorX(int x);
 int HudShowLapTimes(void);
 int HudShowTimeLimit(void);
 
+/* 1 while the VR FPS COUNTER option is on (VR builds only): the race HUD then
+ * draws HudFpsValue() where the time remaining normally sits. */
+int HudShowFps(void);
+int HudFpsValue(void);
+
 #endif
